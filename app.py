@@ -344,7 +344,12 @@ def draw_map(
         if high != low
         else pd.Series(0.5, index=data.index)
     )
-    data["elevation"] = pd.to_numeric(data[metric], errors="coerce").clip(lower=0).fillna(0)
+    data["elevation"] = (
+        pd.to_numeric(data[metric], errors="coerce")
+        .clip(lower=0)
+        .fillna(0)
+        .astype(float)
+    )
     if focused_county:
         data.loc[data["county"] == focused_county, "elevation"] *= 1.4
     data["radius_m"] = 2500 + ratio * 6500
