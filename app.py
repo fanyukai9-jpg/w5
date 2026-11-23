@@ -568,7 +568,7 @@ def draw_map(
                 )
             st.rerun()
     else:
-        slot.pydeck_chart(deck)
+        slot.pydeck_chart(deck, key="animated_air_quality_map")
 
 
 @st.cache_data
