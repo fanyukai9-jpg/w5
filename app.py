@@ -11,6 +11,7 @@ from html import escape
 import pandas as pd
 import requests
 import streamlit as st
+import altair as alt
 from streamlit_autorefresh import st_autorefresh
 
 try:
@@ -90,7 +91,7 @@ GRAY = (153, 153, 153)
 MAROON = (126, 0, 35)
 
 CHART_PALETTES = {
-    "課堂紅藍綠": ["red", "blue", "green", "orange", "purple", "teal"],
+    "課堂紅藍綠": ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00897b"],
     "暖色": ["#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60"],
     "冷色": ["#313695", "#4575b4", "#74add1", "#abd9e9", "#2a9d8f"],
     "高對比": ["#e63946", "#4361ee", "#2a9d8f", "#f4a261", "#8338ec"],
@@ -377,8 +378,14 @@ if source == "即時 API":
         try:
             raw, fetched = load_live(api_key)
             source_note = f"即時 API（抓取時間 {fetched:%H:%M}）"
+        except requests.exceptions.Timeout:
+            st.sidebar.warning(
+                "環境部 API 連線逾時，已改用本機 CSV。可稍後按「重新抓取」。"
+            )
         except Exception as error:
-            st.sidebar.error(f"API 失敗，已改用本機 CSV：{error}")
+            st.sidebar.warning(
+                f"環境部 API 暫時無法使用，已改用本機 CSV。原因：{error}"
+            )
     else:
         st.sidebar.info("尚未輸入金鑰，先使用本機 CSV。")
 
@@ -510,8 +517,8 @@ k3.metric("AQI > 100 測站", int((snap["aqi"] > 100).sum()))
 k4.metric("空氣良好比例", f"{(snap['aqi'] <= 50).mean() * 100:.0f}%")
 
 
-tab_map, tab_trend, tab_cmp, tab_station, tab_data = st.tabs(
-    ["🗺️ 地圖", "📈 趨勢", "📊 比較", "📍 單一測站", "📥 資料"]
+tab_map, tab_trend, tab_cmp, tab_station, tab_data, tab_advanced = st.tabs(
+    ["🗺️ 地圖", "📈 趨勢", "📊 比較", "📍 單一測站", "📥 資料", "✨ 進階圖表"]
 )
 
 
@@ -961,3 +968,71 @@ with tab_data:
         file_name="aqi_filtered.csv",
         mime="text/csv",
     )
+
+
+# ---------- 進階圖表：Altair 熱圖 ----------
+with tab_advanced:
+    st.subheader("測站 AQI 時序熱圖（Altair）")
+    st.caption(
+        "以熱圖同時比較多個測站在不同時間的 AQI。顏色依 AQI 分級；"
+        "將滑鼠移到色塊上可查看縣市、測站、時間與數值。"
+    )
+
+    heatmap_data = filtered.dropna(subset=["aqi", "publishtime"]).copy()
+    if heatmap_data.empty:
+        st.info("目前篩選條件下沒有可繪製的 AQI 時序資料。")
+    else:
+        station_avg = (
+            heatmap_data.groupby("station")["aqi"].mean().sort_values(ascending=False)
+        )
+        max_stations = min(50, len(station_avg))
+        station_count = st.slider(
+            "顯示測站數（依平均 AQI 由高至低）",
+            min_value=1,
+            max_value=max_stations,
+            value=min(20, max_stations),
+            key="heatmap_station_count",
+        )
+        chosen_stations = station_avg.head(station_count).index.tolist()
+        heatmap_data = heatmap_data[heatmap_data["station"].isin(chosen_stations)]
+        heatmap_data["時間"] = heatmap_data["publishtime"].dt.strftime("%m/%d %H:%M")
+        heatmap_data["測站"] = heatmap_data["station"]
+        heatmap_data["縣市"] = heatmap_data["county"]
+        heatmap_data["AQI"] = heatmap_data["aqi"]
+
+        station_order = [station for station in chosen_stations]
+        time_order = [
+            value.strftime("%m/%d %H:%M")
+            for value in sorted(heatmap_data["publishtime"].unique())
+        ]
+        heatmap = (
+            alt.Chart(heatmap_data)
+            .mark_rect(stroke="white", strokeWidth=0.4)
+            .encode(
+                x=alt.X("時間:O", sort=time_order, title="發布時間", axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y("測站:N", sort=station_order, title="測站"),
+                color=alt.Color(
+                    "AQI:Q",
+                    title="AQI",
+                    scale=alt.Scale(
+                        domain=[0, 50, 100, 150, 200, 300],
+                        range=["#00b050", "#ffd400", "#ff7e00", "#e60000", "#8f3f97", "#7e0023"],
+                        clamp=True,
+                    ),
+                ),
+                tooltip=[
+                    alt.Tooltip("縣市:N"),
+                    alt.Tooltip("測站:N"),
+                    alt.Tooltip("時間:O"),
+                    alt.Tooltip("AQI:Q", format=".0f"),
+                ],
+            )
+            .properties(height=max(360, 24 * station_count))
+            .interactive()
+        )
+        st.altair_chart(
+            heatmap,
+            width="stretch",
+            theme="streamlit",
+            alt="各空氣品質測站在不同發布時間的 AQI 熱圖",
+        )
