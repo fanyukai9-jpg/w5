@@ -277,7 +277,7 @@ def draw_map(
         if high != low
         else pd.Series(0.5, index=data.index)
     )
-    data["radius_m"] = 2500 + ratio * 6500
+    data["elevation"] = pd.to_numeric(data[metric], errors="coerce").clip(lower=0).fillna(0)
     data["size_m"] = 100 + ratio * 900
 
     if pdk is None:
@@ -292,18 +292,22 @@ def draw_map(
         return
 
     layer = pdk.Layer(
-        "ScatterplotLayer",
+        "ColumnLayer",
         data=data[
             [
-                "sitename", "county", "status",
-                "latitude", "longitude", "rgba", "val", "radius_m",
+                "sitename", "county", "status", "latitude", "longitude",
+                "rgba", "val", "elevation",
             ]
         ],
         get_position="[longitude, latitude]",
+        get_elevation="elevation",
+        elevation_scale=70,
         get_fill_color="rgba",
-        get_radius="radius_m",
-        radius_min_pixels=5,
-        radius_max_pixels=16,
+        get_radius=2200,
+        radius_min_pixels=4,
+        radius_max_pixels=14,
+        extruded=True,
+        material=True,
         pickable=True,
     )
 
@@ -314,6 +318,8 @@ def draw_map(
             latitude=23.7,
             longitude=121.0,
             zoom=zoom,
+            pitch=58,
+            bearing=0,
         ),
         tooltip={
             "html": (
@@ -516,8 +522,8 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_station_time, tab_data = st.tabs(
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        f"測站位置與{LABELS[metric]}分布；點的顏色與大小都代表指標高低。"
-        "移到測站點上可查看狀態與數值。"
+        f"測站柱體高度與顏色代表{LABELS[metric]}高低；"
+        "移到柱體上可查看測站狀態與數值。"
     )
 
     play = st.button("▶ 播放這段時間的地圖動畫")
