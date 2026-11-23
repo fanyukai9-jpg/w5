@@ -1,4 +1,4 @@
-"""台灣空氣品質儀表板 v2（互動加強版）
+"""臺灣空氣品質監測
 資料：環境部 AQI 歷史測站資料。可切換本機 CSV 快照或即時 API；
 API 失敗時會自動退回 CSV。
 執行：streamlit run app.py
@@ -6,8 +6,6 @@ API 失敗時會自動退回 CSV。
 
 import time
 from datetime import datetime
-from html import escape
-
 import pandas as pd
 import requests
 import streamlit as st
@@ -24,7 +22,7 @@ CSV_PATH = "aqx_p_488.csv"
 API_URL = "https://data.moenv.gov.tw/api/v2/aqx_p_488"
 
 st.set_page_config(
-    page_title="台灣空氣品質儀表板",
+    page_title="臺灣空氣品質監測｜即時與趨勢",
     page_icon="🌫️",
     layout="wide",
 )
@@ -89,20 +87,6 @@ AQI_STEPS = [
 
 GRAY = (153, 153, 153)
 MAROON = (126, 0, 35)
-
-CHART_PALETTES = {
-    "課堂紅藍綠": ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00897b"],
-    "暖色": ["#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60"],
-    "冷色": ["#313695", "#4575b4", "#74add1", "#abd9e9", "#2a9d8f"],
-    "高對比": ["#e63946", "#4361ee", "#2a9d8f", "#f4a261", "#8338ec"],
-}
-
-
-def palette_for(name: str, count: int) -> list[str]:
-    """依選取配色產生和資料系列數量相同的顏色清單。"""
-    palette = CHART_PALETTES[name]
-    return [palette[index % len(palette)] for index in range(count)]
-
 
 # ---------- 資料 ----------
 def clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -262,7 +246,6 @@ def draw_map(
     high: float,
     slot,
     zoom: float = 6.4,
-    size_mode: str = "依數值調整",
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
@@ -282,8 +265,8 @@ def draw_map(
         if high != low
         else pd.Series(0.5, index=data.index)
     )
-    data["radius_m"] = 2500 + ratio * 6500 if size_mode == "依數值調整" else 5000
-    data["size_m"] = 100 + ratio * 900 if size_mode == "依數值調整" else 500
+    data["radius_m"] = 2500 + ratio * 6500
+    data["size_m"] = 100 + ratio * 900
 
     if pdk is None:
         slot.map(
@@ -314,6 +297,7 @@ def draw_map(
 
     deck = pdk.Deck(
         layers=[layer],
+        views=[pdk.View(type="MapView", controller=False)],
         initial_view_state=pdk.ViewState(
             latitude=23.7,
             longitude=121.0,
@@ -331,7 +315,7 @@ def draw_map(
 
 
 # ---------- 側邊欄：資料來源與即時更新 ----------
-st.sidebar.title("🌫️ 互動控制")
+st.sidebar.title("🌫️ 空品監測條件")
 has_api_key = bool(secret_key())
 source = st.sidebar.radio(
     "資料來源",
@@ -429,7 +413,7 @@ county_pick = st.sidebar.multiselect(
 )
 
 metric = st.sidebar.selectbox(
-    "地圖／排名指標",
+    "地圖與排名指標",
     metrics,
     format_func=LABELS.get,
 )
@@ -474,8 +458,9 @@ low, high = raw[metric].min(), raw[metric].max()
 
 
 # ---------- 標題與指標 ----------
-st.title("台灣空氣品質儀表板")
+st.title("臺灣空氣品質監測")
 st.caption(
+    "即時掌握各地空氣品質，追蹤污染變化，並比較區域與測站。\n\n"
     f"資料來源：{source_note}｜"
     f"資料範圍：{times[0]:%m/%d %H:%M}–{times[-1]:%m/%d %H:%M}｜"
     f"目前檢視：{t_sel:%m/%d %H:%M}｜"
@@ -511,23 +496,17 @@ k3.metric("AQI > 100 測站", int((snap["aqi"] > 100).sum()))
 k4.metric("空氣良好比例", f"{(snap['aqi'] <= 50).mean() * 100:.0f}%")
 
 
-tab_map, tab_trend, tab_cmp, tab_station, tab_data, tab_advanced = st.tabs(
-    ["🗺️ 地圖", "📈 趨勢", "📊 比較", "📍 單一測站", "📥 資料", "✨ 進階圖表"]
+tab_map, tab_trend, tab_cmp, tab_station, tab_advanced, tab_data = st.tabs(
+    ["即時概況", "時間趨勢", "區域比較", "測站分析", "時序熱圖", "資料明細"]
 )
 
 
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        "測站點色依 AQI／所選指標變化；可調整點大小與地圖縮放。"
-        "滑鼠移到點上可看測站數值。"
+        f"測站位置與{LABELS[metric]}分布；點的顏色與大小都代表指標高低。"
+        "移到測站點上可查看狀態與數值。"
     )
-
-    map_size_mode = st.selectbox(
-        "測站點大小",
-        ["依數值調整", "固定大小"],
-    )
-    map_zoom = st.slider("地圖縮放", 5.0, 10.0, 6.4, 0.2)
 
     play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
@@ -542,15 +521,11 @@ with tab_map:
             )
             draw_map(
                 frame, metric, low, high, map_slot,
-                zoom=map_zoom,
-                size_mode=map_size_mode,
             )
             time.sleep(0.8)
     else:
         draw_map(
             snap, metric, low, high, map_slot,
-            zoom=map_zoom,
-            size_mode=map_size_mode,
         )
 
 
@@ -559,7 +534,7 @@ with tab_trend:
     column1, column2 = st.columns(2)
 
     with column1:
-        st.subheader("測站比較（折線圖）")
+        st.subheader("測站 AQI 與污染物趨勢")
         top3 = snap.nlargest(3, "aqi")["station"].tolist()
 
         picks = st.multiselect(
@@ -574,12 +549,6 @@ with tab_trend:
             format_func=LABELS.get,
             key="trend_metric",
         )
-        line_palette = st.selectbox(
-            "線條配色",
-            list(CHART_PALETTES),
-            key="line_palette",
-        )
-
         if picks:
             line = filtered[
                 filtered["station"].isin(picks)
@@ -589,15 +558,12 @@ with tab_trend:
                 values=metric1,
                 aggfunc="mean",
             )
-            st.line_chart(
-                line,
-                color=palette_for(line_palette, len(line.columns)),
-            )
+            st.line_chart(line)
         else:
             st.info("請至少選一個測站。")
 
     with column2:
-        st.subheader("分組堆疊（面積圖）")
+        st.subheader("各區域污染指標變化")
         grouping = st.radio(
             "分組方式",
             ["縣市", "區域"],
@@ -612,11 +578,6 @@ with tab_trend:
             index=metrics.index("pm25") if "pm25" in metrics else 0,
             format_func=LABELS.get,
             key="area_metric",
-        )
-        area_palette = st.selectbox(
-            "面積圖配色",
-            list(CHART_PALETTES),
-            key="area_palette",
         )
         area_stack_options = {
             "分層重疊（layered）": False,
@@ -636,11 +597,7 @@ with tab_trend:
             aggfunc="mean",
         ).fillna(0)
 
-        st.area_chart(
-            area_data,
-            color=palette_for(area_palette, len(area_data.columns)),
-            stack=area_stack_options[area_stack_label],
-        )
+        st.area_chart(area_data, stack=area_stack_options[area_stack_label])
 
 
 # ---------- 比較 ----------
@@ -648,7 +605,7 @@ with tab_cmp:
     column1, column2 = st.columns(2)
 
     with column1:
-        st.subheader("縣市／區域／測站比較（長條圖）")
+        st.subheader("空氣品質區域排名")
 
         level = st.radio(
             "比較單位",
@@ -683,11 +640,6 @@ with tab_cmp:
             list(bar_stack_options),
             disabled=bar_content != "空氣品質狀態測站數",
         )
-        bar_palette = st.selectbox(
-            "長條圖配色",
-            list(CHART_PALETTES),
-        )
-
         if bar_content == "平均 AQI 排名":
             order = st.radio(
                 "排序",
@@ -707,7 +659,6 @@ with tab_cmp:
             st.bar_chart(
                 rank.head(count),
                 horizontal=(bar_orientation == "橫向"),
-                color=palette_for(bar_palette, 1)[0],
             )
         else:
             status_matrix = snap.groupby(
@@ -728,11 +679,10 @@ with tab_cmp:
                 status_matrix,
                 horizontal=(bar_orientation == "橫向"),
                 stack=bar_stack_options[bar_stack_label],
-                color=palette_for(bar_palette, len(status_matrix.columns)),
             )
 
     with column2:
-        st.subheader("兩個變數的關係（散佈圖）")
+        st.subheader("污染物與空氣品質的關聯")
 
         options = list(metrics)
 
@@ -751,53 +701,33 @@ with tab_cmp:
             key="y_axis",
         )
 
-        color_by = st.selectbox(
-            "顏色分組",
-            ["county", "region", "status"],
+        category_column = st.selectbox(
+            "測站分類",
+            ["status", "region"],
             format_func={
-                "county": "縣市",
                 "region": "區域",
-                "status": "狀態",
+                "status": "空品狀態",
             }.get,
         )
-        scatter_palette = st.selectbox(
-            "散佈圖配色",
-            list(CHART_PALETTES),
-        )
-        scatter_size_mode = st.radio(
-            "點大小",
-            ["固定大小", "依指標調整"],
-            horizontal=True,
-        )
-
         points = snap.dropna(subset=[x_metric, y_metric]).copy()
-        points["_scatter_group"] = points[color_by].fillna("未分類").astype(str)
-        scatter_groups = sorted(points["_scatter_group"].unique())
-        scatter_colors = palette_for(scatter_palette, len(scatter_groups))
-        scatter_color_map = dict(zip(scatter_groups, scatter_colors))
-        points["_scatter_color"] = points["_scatter_group"].map(scatter_color_map)
-
-        scatter_size = 100
-        if scatter_size_mode == "依指標調整":
-            size_options = [m for m in options if m not in {x_metric, y_metric}] or options
-            size_metric = st.selectbox(
-                "點大小依據",
-                size_options,
-                format_func=LABELS.get,
-            )
-            points["_scatter_size"] = pd.to_numeric(
-                points[size_metric],
-                errors="coerce",
-            ).fillna(0).clip(lower=0)
-            scatter_size = "_scatter_size"
-        else:
-            scatter_size = st.slider(
-                "固定點大小",
-                20,
-                500,
-                100,
-                10,
-            )
+        category_label = {"status": "空品狀態", "region": "區域"}[category_column]
+        points[category_label] = points[category_column].fillna("未分類").astype(str)
+        size_options = [m for m in options if m not in {x_metric, y_metric}] or options
+        size_metric = st.selectbox(
+            "點大小依據指標",
+            size_options,
+            format_func=LABELS.get,
+        )
+        points["_scatter_size"] = pd.to_numeric(
+            points[size_metric],
+            errors="coerce",
+        ).fillna(0).clip(lower=0)
+        x_label = LABELS[x_metric]
+        y_label = LABELS[y_metric]
+        size_label = f"點大小：{LABELS[size_metric]}"
+        points[x_label] = points[x_metric]
+        points[y_label] = points[y_metric]
+        points[size_label] = points["_scatter_size"]
 
         if len(points) > 2 and x_metric != y_metric:
             correlation = points[[x_metric, y_metric]].corr().iloc[0, 1]
@@ -805,39 +735,29 @@ with tab_cmp:
                 f"相關係數 r = {correlation:.2f}（{len(points)} 個測站）"
             )
 
-        if 1 < len(scatter_groups) <= 8:
-            legend_columns = st.columns(min(4, len(scatter_groups)))
-            for index, group in enumerate(scatter_groups):
-                with legend_columns[index % len(legend_columns)]:
-                    st.markdown(
-                        f'<span style="color:{scatter_color_map[group]}">●</span> '
-                        f'{escape(group)}',
-                        unsafe_allow_html=True,
-                    )
-        elif scatter_groups:
-            st.caption(
-                f"點色依「{ {'county': '縣市', 'region': '區域', 'status': '狀態'}[color_by] }」"
-                f"分類，共 {len(scatter_groups)} 類。"
-            )
-
         st.scatter_chart(
             points,
-            x=x_metric,
-            y=y_metric,
-            color="_scatter_color",
-            size=scatter_size,
+            x=x_label,
+            y=y_label,
+            color=category_label,
+            size=size_label,
         )
 
     column3, column4 = st.columns(2)
 
     with column3:
-        st.subheader("空氣品質狀態分布")
+        st.subheader("各空氣品質等級測站數")
         status_counts = snap["status"].value_counts().reindex(status_opts).dropna()
         st.bar_chart(status_counts)
 
     with column4:
-        st.subheader("主要污染物（AQI 偏高時）")
-        pollutants = snap["pollutant"].dropna().value_counts()
+        st.subheader("目前主要污染物")
+        pollutants = (
+            snap["pollutant"]
+            .replace(r"^\s*$", pd.NA, regex=True)
+            .dropna()
+            .value_counts()
+        )
 
         if pollutants.empty:
             st.info("這個時間點沒有測站標示主要污染物（代表空氣品質良好）。")
@@ -892,22 +812,15 @@ with tab_station:
     )
 
     if show_metrics:
-        station_line_palette = st.selectbox(
-            "測站指標線條配色",
-            list(CHART_PALETTES),
-        )
         chart_data = one.set_index("publishtime")[show_metrics].rename(
             columns=LABELS
         )
-        st.line_chart(
-            chart_data,
-            color=palette_for(station_line_palette, len(chart_data.columns)),
-        )
+        st.line_chart(chart_data)
 
 
 # ---------- 資料 ----------
 with tab_data:
-    st.caption("表格可點欄位排序，右上角有搜尋與全螢幕。")
+    st.caption("呈現目前時間與篩選條件下的測站觀測資料，可排序或下載 CSV。")
 
     columns = [
         column
@@ -943,7 +856,7 @@ with tab_data:
 
 # ---------- 進階圖表：Altair 熱圖 ----------
 with tab_advanced:
-    st.subheader("測站 AQI 時序熱圖（Altair）")
+    st.subheader("各測站 AQI 時序熱圖")
     st.caption(
         "以熱圖同時比較多個測站在不同時間的 AQI。顏色依 AQI 分級；"
         "將滑鼠移到色塊上可查看縣市、測站、時間與數值。"
