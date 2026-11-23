@@ -27,6 +27,18 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+    .mapboxgl-ctrl-zoom-in,
+    .mapboxgl-ctrl-zoom-out {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 ALIASES = {
     "pm2.5": "pm25",
     "pm2_5": "pm25",
@@ -491,7 +503,7 @@ k1.metric(
     else f"{current_aqi - prev:+.1f}（較前一小時）",
     delta_color="inverse",
 )
-k2.metric("最高 AQI 測站", f"{worst['sitename']}（{worst['aqi']:.0f}）")
+k2.metric("最高測站 AQI", f"{worst['sitename']} {worst['aqi']:.0f}")
 k3.metric("AQI > 100 測站", int((snap["aqi"] > 100).sum()))
 k4.metric("空氣良好比例", f"{(snap['aqi'] <= 50).mean() * 100:.0f}%")
 
@@ -595,7 +607,7 @@ with tab_trend:
             columns=group_column,
             values=metric2,
             aggfunc="mean",
-        ).fillna(0)
+        )
 
         st.area_chart(area_data, stack=area_stack_options[area_stack_label])
 
@@ -832,8 +844,24 @@ with tab_data:
         if column in snap.columns
     ]
 
+    table_labels = {
+        "publishtime": "發布時間",
+        "region": "區域",
+        "county": "縣市",
+        "sitename": "測站",
+        "aqi": "AQI",
+        "status": "空品狀態",
+        "pollutant": "主要污染物",
+        "pm25": "PM2.5",
+        "pm10": "PM10",
+        "o3": "臭氧 O₃",
+        "no2": "二氧化氮 NO₂",
+        "wind_speed": "風速",
+        "latitude": "緯度",
+        "longitude": "經度",
+    }
     st.dataframe(
-        snap[columns].sort_values("aqi", ascending=False),
+        snap[columns].sort_values("aqi", ascending=False).rename(columns=table_labels),
         hide_index=True,
     )
 
@@ -894,7 +922,12 @@ with tab_advanced:
             .mark_rect(stroke="white", strokeWidth=0.4)
             .encode(
                 x=alt.X("時間:O", sort=time_order, title="發布時間", axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y("測站:N", sort=station_order, title="測站"),
+                y=alt.Y(
+                    "測站:N",
+                    sort=station_order,
+                    title="測站",
+                    axis=alt.Axis(labelLimit=260),
+                ),
                 color=alt.Color(
                     "AQI:Q",
                     title="AQI",
