@@ -524,7 +524,9 @@ def draw_map(
     if selectable:
         chart_key = (
             "air_quality_county_map_"
-            f"{st.session_state.get('map_selection_epoch', 0)}"
+            f"{st.session_state.get('map_selection_epoch', 0)}_"
+            f"{'flat' if map_mode == '測站平面圖' else '3d'}_"
+            f"{focused_county or 'all'}"
         )
         event = slot.pydeck_chart(
             deck,
@@ -572,12 +574,54 @@ def draw_map(
 
 @st.cache_data
 def load_county_boundaries():
-    """載入內政部國土測繪中心縣市界線 GeoJSON。"""
+    """載入縣界並略過遠離臺灣周邊的外海多邊形。"""
     path = Path(__file__).with_name("tw_county_boundaries.geojson")
     if not path.exists():
         return []
     with path.open(encoding="utf-8") as boundary_file:
-        return json.load(boundary_file).get("features", [])
+        features = json.load(boundary_file).get("features", [])
+
+    # Some county features include remote offshore polygons (for example,
+    # the South China Sea). Rendering those with the Taiwan map makes a county
+    # outline span the whole map and makes focus bounds unusable. Keep Taiwan,
+    # Penghu, Kinmen, and Matsu while omitting polygons outside this region.
+    west, east, south, north = 117.0, 123.5, 20.0, 27.5
+
+    def polygon_is_near_taiwan(polygon):
+        points = []
+
+        def collect(value):
+            if (
+                isinstance(value, (list, tuple))
+                and len(value) >= 2
+                and isinstance(value[0], (int, float))
+                and isinstance(value[1], (int, float))
+            ):
+                points.append(value)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    collect(child)
+
+        collect(polygon)
+        return bool(points) and all(
+            west <= point[0] <= east and south <= point[1] <= north
+            for point in points
+        )
+
+    for feature in features:
+        geometry = feature.get("geometry", {})
+        geometry_type = geometry.get("type")
+        coordinates = geometry.get("coordinates", [])
+        if geometry_type == "MultiPolygon":
+            geometry["coordinates"] = [
+                polygon for polygon in coordinates if polygon_is_near_taiwan(polygon)
+            ]
+        elif geometry_type == "Polygon" and not polygon_is_near_taiwan(coordinates):
+            geometry["coordinates"] = []
+    return [
+        feature for feature in features
+        if feature.get("geometry", {}).get("coordinates")
+    ]
 
 
 @st.cache_data
