@@ -6,7 +6,7 @@ API 失敗時會自動退回 CSV。
 
 import json
 import time
-from math import asin, cos, radians, sin, sqrt
+from math import asin, cos, log, pi, radians, sin, sqrt, tan
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -321,13 +321,19 @@ def draw_map(
     center: tuple[float, float] = (23.7, 121.0),
     map_mode: str = "3D AQI 柱狀圖",
     highlighted_counties: list[str] | None = None,
+    focused_county: str | None = None,
+    selectable: bool = True,
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
 
     colors = [rgb_for(metric, value, low, high) for value in data[metric]]
 
-    data["rgba"] = [[*color, 210] for color in colors]
+    alpha = 80 if focused_county else 210
+    data["rgba"] = [
+        [*color, 210 if not focused_county or county == focused_county else alpha]
+        for color, county in zip(colors, data["county"])
+    ]
     data["hex"] = ["#%02x%02x%02x" % color for color in colors]
     data["val"] = (
         data[metric]
@@ -370,6 +376,7 @@ def draw_map(
             radius_min_pixels=5,
             radius_max_pixels=16,
             pickable=True,
+            id="aqi-stations",
         )
     else:
         layer = pdk.Layer(
@@ -390,36 +397,55 @@ def draw_map(
             extruded=True,
             material=True,
             pickable=True,
+            id="aqi-stations",
         )
 
     boundary_features = load_county_boundaries()
     highlighted = set(highlighted_counties or [])
-    regular_features = [
-        feature for feature in boundary_features
-        if feature.get("properties", {}).get("COUNTYNAME") not in highlighted
-    ]
-    focus_features = [
+    boundary_layers = []
+    if focused_county:
+        dim_features = [
+            feature for feature in boundary_features
+            if feature.get("properties", {}).get("COUNTYNAME") != focused_county
+        ]
+        if dim_features:
+            boundary_layers.append(
+                pdk.Layer(
+                    "GeoJsonLayer",
+                    data={"type": "FeatureCollection", "features": dim_features},
+                    id="dim-unselected-counties",
+                    stroked=False,
+                    filled=True,
+                    get_fill_color=[18, 18, 22, 175],
+                    pickable=False,
+                )
+            )
+    if boundary_features:
+        boundary_layers.append(
+            pdk.Layer(
+                "PolygonLayer",
+                data=county_polygon_data(),
+                id="county-boundaries",
+                stroked=True,
+                filled=True,
+                get_polygon="polygon",
+                get_fill_color=[0, 0, 0, 1],
+                get_line_color=[170, 180, 188, 155],
+                line_width_min_pixels=0.8,
+                pickable=True,
+                auto_highlight=True,
+            )
+        )
+    highlighted_features = [
         feature for feature in boundary_features
         if feature.get("properties", {}).get("COUNTYNAME") in highlighted
     ]
-    boundary_layers = []
-    if regular_features:
+    if highlighted_features:
         boundary_layers.append(
             pdk.Layer(
                 "GeoJsonLayer",
-                data={"type": "FeatureCollection", "features": regular_features},
-                stroked=True,
-                filled=False,
-                get_line_color=[170, 180, 188, 155],
-                line_width_min_pixels=0.8,
-                pickable=False,
-            )
-        )
-    if focus_features:
-        boundary_layers.append(
-            pdk.Layer(
-                "GeoJsonLayer",
-                data={"type": "FeatureCollection", "features": focus_features},
+                data={"type": "FeatureCollection", "features": highlighted_features},
+                id="nearby-county-outline",
                 stroked=True,
                 filled=False,
                 get_line_color=[255, 255, 255, 255],
@@ -427,6 +453,31 @@ def draw_map(
                 pickable=False,
             )
         )
+    if focused_county:
+        focused_features = [
+            feature for feature in boundary_features
+            if feature.get("properties", {}).get("COUNTYNAME") == focused_county
+        ]
+        if focused_features:
+            focused_polygons = [
+                polygon for polygon in county_polygon_data()
+                if polygon["county"] == focused_county
+            ]
+            boundary_layers.append(
+                pdk.Layer(
+                    "PolygonLayer",
+                    data=focused_polygons,
+                    id="focused-county-toggle",
+                    stroked=True,
+                    filled=True,
+                    get_polygon="polygon",
+                    get_fill_color=[0, 0, 0, 1],
+                    get_line_color=[255, 255, 255, 255],
+                    line_width_min_pixels=4,
+                    pickable=True,
+                    auto_highlight=True,
+                )
+            )
 
     deck = pdk.Deck(
         layers=[*boundary_layers, layer],
@@ -446,7 +497,53 @@ def draw_map(
         },
     )
 
-    slot.pydeck_chart(deck)
+    if selectable:
+        chart_key = (
+            "air_quality_county_map_"
+            f"{st.session_state.get('map_selection_epoch', 0)}"
+        )
+        event = slot.pydeck_chart(
+            deck,
+            on_select="rerun",
+            selection_mode="single-object",
+            key=chart_key,
+        )
+        selection = getattr(event, "selection", {}) or {}
+        selected_by_layer = selection.get("objects", {})
+
+        def selected_county_name(selected_objects):
+            if not selected_objects:
+                return None
+            selected_object = selected_objects[0]
+            properties = selected_object.get("properties", selected_object)
+            return (
+                properties.get("COUNTYNAME")
+                or properties.get("county")
+                or selected_object.get("county")
+                or selected_object.get("COUNTYNAME")
+            )
+
+        next_focus = st.session_state.get("map_focus_county")
+        boundary_objects = selected_by_layer.get("county-boundaries")
+        boundary_county = selected_county_name(boundary_objects)
+        if focused_county and boundary_county and boundary_county != focused_county:
+            next_focus = boundary_county
+        elif focused_county and selected_by_layer.get("focused-county-toggle"):
+            # The focused polygon uses its own selectable layer, so clicking it
+            # again is a distinct event that restores the previous map view.
+            next_focus = None
+        elif "county-boundaries" in selected_by_layer:
+            next_focus = boundary_county
+
+        if next_focus != st.session_state.get("map_focus_county"):
+            st.session_state["map_focus_county"] = next_focus
+            if next_focus is None:
+                st.session_state["map_selection_epoch"] = (
+                    st.session_state.get("map_selection_epoch", 0) + 1
+                )
+            st.rerun()
+    else:
+        slot.pydeck_chart(deck)
 
 
 @st.cache_data
@@ -457,6 +554,77 @@ def load_county_boundaries():
         return []
     with path.open(encoding="utf-8") as boundary_file:
         return json.load(boundary_file).get("features", [])
+
+
+@st.cache_data
+def county_polygon_data():
+    """Flatten GeoJSON polygons so PyDeck can report county names on clicks."""
+    polygons = []
+    for feature in load_county_boundaries():
+        geometry = feature.get("geometry", {})
+        coordinates = geometry.get("coordinates", [])
+        if geometry.get("type") == "Polygon":
+            county_polygons = [coordinates]
+        elif geometry.get("type") == "MultiPolygon":
+            county_polygons = coordinates
+        else:
+            continue
+        county = feature.get("properties", {}).get("COUNTYNAME", "")
+        for polygon in county_polygons:
+            polygons.append(
+                {
+                    "county": county,
+                    "polygon": polygon,
+                    "sitename": "縣市界",
+                    "val": "—",
+                    "status": "點一下聚焦縣市",
+                }
+            )
+    return polygons
+
+
+def county_view(counties: list[str]):
+    """依縣界範圍估算適合的地圖中心與縮放倍率。"""
+    wanted = set(counties)
+    points = []
+
+    def walk_coordinates(value):
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) >= 2
+            and isinstance(value[0], (int, float))
+            and isinstance(value[1], (int, float))
+        ):
+            points.append((float(value[0]), float(value[1])))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                walk_coordinates(child)
+
+    for feature in load_county_boundaries():
+        if feature.get("properties", {}).get("COUNTYNAME") in wanted:
+            walk_coordinates(feature.get("geometry", {}).get("coordinates", []))
+    if not points:
+        return (23.7, 121.0), 6.4
+
+    west = min(point[0] for point in points)
+    east = max(point[0] for point in points)
+    south = min(point[1] for point in points)
+    north = max(point[1] for point in points)
+    center = ((south + north) / 2, (west + east) / 2)
+
+    def mercator_y(latitude):
+        latitude = max(-85.0, min(85.0, latitude))
+        latitude_radians = radians(latitude)
+        return log(tan(pi / 4 + latitude_radians / 2))
+
+    longitude_fraction = max((east - west) / 360, 1e-5)
+    latitude_fraction = max(
+        abs(mercator_y(north) - mercator_y(south)) / (2 * pi),
+        1e-5,
+    )
+    zoom_x = log(620 / (512 * longitude_fraction), 2)
+    zoom_y = log(390 / (512 * latitude_fraction), 2)
+    return center, max(5.0, min(11.0, min(zoom_x, zoom_y) - 0.5))
 
 
 def nearest_stations(data: pd.DataFrame, latitude: float, longitude: float):
@@ -548,8 +716,7 @@ metrics = [metric for metric in LABELS if metric in raw.columns]
 times = sorted(raw["publishtime"].dropna().unique())
 times = [pd.Timestamp(value) for value in times]
 
-# 定位完成後，在建立側邊欄篩選器前套用測站所在縣市與相鄰縣市，
-# 讓所有圖表與明細使用同一組縣市資料。
+# 定位完成後，記錄最近測站所在縣市及其相鄰縣市作為地圖的預設視野。
 locator_state = st.session_state.get("nearby_location_component")
 component_location = (
     locator_state.get("location")
@@ -716,7 +883,8 @@ with tab_map:
     st.caption(
         f"全台測站都會顯示；定位附近縣市以粗線標出。"
         f"顏色代表{LABELS[metric]}級距，平面圖點大小或 3D 柱高代表數值高低。"
-        "淺線為一般縣界，粗白線為附近縣界；可拖曳平移、滾輪縮放、按住右鍵旋轉。"
+        "定位後地圖會放大到附近區域；點任一縣市可聚焦，再點同一縣市恢復。"
+        "聚焦時其他縣市調暗，可拖曳平移、滾輪縮放、按住右鍵旋轉。"
         "縣市界線來源：內政部國土測繪中心。"
     )
 
@@ -756,6 +924,11 @@ with tab_map:
     map_zoom = 6.4
     location = st.session_state.get("nearby_location")
     highlighted_counties = st.session_state.get("nearby_counties", [])
+    focused_county = st.session_state.get("map_focus_county")
+    if highlighted_counties:
+        map_center, map_zoom = county_view(highlighted_counties)
+    if focused_county:
+        map_center, map_zoom = county_view([focused_county])
     if location:
         lat, lon = location["latitude"], location["longitude"]
         nearby = nearest_stations(map_data, lat, lon)
@@ -783,6 +956,9 @@ with tab_map:
                 use_container_width=True,
             )
 
+    if focused_county:
+        st.info(f"目前聚焦：{focused_county}｜再點一次該縣市可恢復附近區域視野。")
+
     play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
     map_slot = st.empty()
@@ -804,6 +980,8 @@ with tab_map:
                 center=map_center,
                 map_mode=map_mode,
                 highlighted_counties=highlighted_counties,
+                focused_county=focused_county,
+                selectable=False,
             )
             time.sleep(0.8)
     else:
@@ -813,6 +991,7 @@ with tab_map:
             center=map_center,
             map_mode=map_mode,
             highlighted_counties=highlighted_counties,
+            focused_county=focused_county,
         )
 
 
