@@ -9,6 +9,7 @@ import time
 from math import asin, cos, log, pi, radians, sin, sqrt, tan
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import streamlit as st
@@ -253,7 +254,7 @@ def load_live(api_key: str):
     if keys:
         df = df.drop_duplicates(keys)
 
-    return df, datetime.now()
+    return df, datetime.now(ZoneInfo("Asia/Taipei"))
 
 
 def secret_key() -> str:
@@ -783,7 +784,7 @@ if source == "即時 API":
     if api_key:
         try:
             raw, fetched = load_live(api_key)
-            source_note = f"即時 API（抓取時間 {fetched:%H:%M}）"
+            source_note = f"即時 API（台灣時間 {fetched:%H:%M} 抓取）"
         except requests.exceptions.Timeout:
             st.sidebar.warning(
                 "環境部 API 連線逾時，已改用本機 CSV。可稍後按「重新抓取」。"
