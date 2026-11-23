@@ -61,7 +61,8 @@ location_component = st.components.v2.component(
                     setStateValue("location", {
                         latitude: coords.latitude,
                         longitude: coords.longitude,
-                        accuracy: coords.accuracy
+                        accuracy: coords.accuracy,
+                        requestedAt: Date.now()
                     });
                 },
                 (error) => {
@@ -730,6 +731,7 @@ if location:
     location_token = (
         round(float(location["latitude"]), 4),
         round(float(location["longitude"]), 4),
+        location.get("requestedAt"),
     )
     if location_token != st.session_state.get("applied_location_token"):
         latest_sites = raw[raw["publishtime"] == times[-1]]
@@ -751,6 +753,10 @@ if location:
             st.session_state["nearby_anchor_county"] = anchor_county
             st.session_state["nearby_counties"] = nearby_counties
             st.session_state["applied_location_token"] = location_token
+            st.session_state["map_focus_county"] = None
+            st.session_state["map_selection_epoch"] = (
+                st.session_state.get("map_selection_epoch", 0) + 1
+            )
 
 
 # ---------- 側邊欄：篩選條件 ----------
