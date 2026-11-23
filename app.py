@@ -4,8 +4,10 @@ API 失敗時會自動退回 CSV。
 執行：streamlit run app.py
 """
 
+import json
 import time
 from math import asin, cos, radians, sin, sqrt
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import requests
@@ -318,6 +320,7 @@ def draw_map(
     zoom: float = 6.4,
     center: tuple[float, float] = (23.7, 121.0),
     map_mode: str = "3D AQI 柱狀圖",
+    highlighted_counties: list[str] | None = None,
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
@@ -389,8 +392,44 @@ def draw_map(
             pickable=True,
         )
 
+    boundary_features = load_county_boundaries()
+    highlighted = set(highlighted_counties or [])
+    regular_features = [
+        feature for feature in boundary_features
+        if feature.get("properties", {}).get("COUNTYNAME") not in highlighted
+    ]
+    focus_features = [
+        feature for feature in boundary_features
+        if feature.get("properties", {}).get("COUNTYNAME") in highlighted
+    ]
+    boundary_layers = []
+    if regular_features:
+        boundary_layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": regular_features},
+                stroked=True,
+                filled=False,
+                get_line_color=[170, 180, 188, 155],
+                line_width_min_pixels=0.8,
+                pickable=False,
+            )
+        )
+    if focus_features:
+        boundary_layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": focus_features},
+                stroked=True,
+                filled=False,
+                get_line_color=[255, 255, 255, 255],
+                line_width_min_pixels=3,
+                pickable=False,
+            )
+        )
+
     deck = pdk.Deck(
-        layers=[layer],
+        layers=[*boundary_layers, layer],
         views=[pdk.View(type="MapView", controller=True)],
         initial_view_state=pdk.ViewState(
             latitude=center[0],
@@ -408,6 +447,16 @@ def draw_map(
     )
 
     slot.pydeck_chart(deck)
+
+
+@st.cache_data
+def load_county_boundaries():
+    """載入內政部國土測繪中心縣市界線 GeoJSON。"""
+    path = Path(__file__).with_name("tw_county_boundaries.geojson")
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as boundary_file:
+        return json.load(boundary_file).get("features", [])
 
 
 def nearest_stations(data: pd.DataFrame, latitude: float, longitude: float):
@@ -532,14 +581,8 @@ if location:
             nearby_counties = sorted(
                 set(nearby_counties) & available_counties
             )
-            nearby_regions = sorted(
-                set(raw.loc[raw["county"].isin(nearby_counties), "region"])
-            )
             st.session_state["nearby_anchor_county"] = anchor_county
             st.session_state["nearby_counties"] = nearby_counties
-            st.session_state["region_filter"] = nearby_regions
-            st.session_state["county_filter"] = nearby_counties
-            st.session_state["_last_region_filter"] = nearby_regions
             st.session_state["applied_location_token"] = location_token
 
 
@@ -671,8 +714,10 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_station_time, tab_data = st.tabs(
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        f"測站顏色代表{LABELS[metric]}級距；平面圖點大小或 3D 柱高代表數值高低。"
-        "可拖曳平移、滾輪縮放、按住右鍵旋轉；移到柱體上可查看數值。"
+        f"全台測站都會顯示；定位附近縣市以粗線標出。"
+        f"顏色代表{LABELS[metric]}級距，平面圖點大小或 3D 柱高代表數值高低。"
+        "淺線為一般縣界，粗白線為附近縣界；可拖曳平移、滾輪縮放、按住右鍵旋轉。"
+        "縣市界線來源：內政部國土測繪中心。"
     )
 
     location_result = location_component(
@@ -702,26 +747,24 @@ with tab_map:
         key="map_mode",
     )
 
-    map_data = snap
+    map_data = raw[
+        (raw["publishtime"] == t_sel)
+        & raw["aqi"].ge(aqi_min)
+        & raw["status"].isin(status_pick)
+    ]
     map_center = (23.7, 121.0)
     map_zoom = 6.4
     location = st.session_state.get("nearby_location")
+    highlighted_counties = st.session_state.get("nearby_counties", [])
     if location:
         lat, lon = location["latitude"], location["longitude"]
-        current_sites = raw[
-            (raw["publishtime"] == t_sel)
-            & raw["county"].isin(county_pick)
-            & raw["aqi"].ge(aqi_min)
-            & raw["status"].isin(status_pick)
-        ]
-        nearby = nearest_stations(current_sites, lat, lon)
+        nearby = nearest_stations(map_data, lat, lon)
         if nearby.empty:
             st.info("目前條件下沒有可定位的測站，請調整 AQI 或狀態篩選。")
         else:
             st.subheader("📍 你附近的空品測站")
             st.caption(
-                "依距離列出最近 5 站；所有圖表共用定位後的縣市範圍，"
-                "並沿用 AQI 與狀態條件。"
+                "依距離列出最近 5 站；附近縣市以粗線標示，其餘縣市和測站仍完整顯示。"
             )
             nearby_display = nearby.head(5).copy()
             nearby_display["距離（公里）"] = nearby_display["距離（公里）"].round(1)
@@ -739,12 +782,6 @@ with tab_map:
                 hide_index=True,
                 use_container_width=True,
             )
-            map_data = nearby.head(15)
-            map_center = (
-                float(nearby.iloc[0]["latitude"]),
-                float(nearby.iloc[0]["longitude"]),
-            )
-            map_zoom = 9.5
 
     play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
@@ -752,7 +789,11 @@ with tab_map:
 
     if play:
         for timestamp in times:
-            frame = filtered[filtered["publishtime"] == timestamp]
+            frame = raw[
+                (raw["publishtime"] == timestamp)
+                & raw["aqi"].ge(aqi_min)
+                & raw["status"].isin(status_pick)
+            ]
             caption_slot.markdown(
                 f"**{timestamp:%m/%d %H:%M}**　"
                 f"{LABELS[metric]}　測站 {len(frame)}"
@@ -762,6 +803,7 @@ with tab_map:
                 zoom=map_zoom,
                 center=map_center,
                 map_mode=map_mode,
+                highlighted_counties=highlighted_counties,
             )
             time.sleep(0.8)
     else:
@@ -770,6 +812,7 @@ with tab_map:
             zoom=map_zoom,
             center=map_center,
             map_mode=map_mode,
+            highlighted_counties=highlighted_counties,
         )
 
 
@@ -780,10 +823,27 @@ with tab_trend:
     with column1:
         st.subheader("測站 AQI 與污染物趨勢")
         top3 = snap.nlargest(3, "aqi")["station"].tolist()
+        location = st.session_state.get("nearby_location")
+        nearby_counties = set(st.session_state.get("nearby_counties", []))
+        if location and nearby_counties:
+            nearby_now = snap[snap["county"].isin(nearby_counties)]
+            preferred = nearest_stations(
+                nearby_now,
+                location["latitude"],
+                location["longitude"],
+            )["station"].drop_duplicates().head(3).tolist()
+            top3 = (preferred + [name for name in top3 if name not in preferred])[:3]
 
         picks = st.multiselect(
             "選擇測站（可多選）",
-            sorted(filtered["station"].unique()),
+            sorted(
+                filtered["station"].unique(),
+                key=lambda name: (
+                    filtered.loc[filtered["station"] == name, "county"].iloc[0]
+                    not in nearby_counties,
+                    name,
+                ),
+            ),
             default=top3,
         )
 
@@ -827,7 +887,24 @@ with tab_trend:
 
         area_options = sorted(filtered[group_column].dropna().unique())
         group_means = filtered.groupby(group_column)[metric2].mean().dropna()
-        default_series = group_means.sort_values(ascending=False).head(2).index.tolist()
+        default_series_order = group_means.sort_values(ascending=False).index.tolist()
+        nearby_counties = set(st.session_state.get("nearby_counties", []))
+        if grouping == "縣市":
+            nearby_groups = nearby_counties
+        else:
+            nearby_groups = set(
+                raw.loc[raw["county"].isin(nearby_counties), "region"].dropna()
+            )
+        default_series = [
+            group for group in default_series_order if group in nearby_groups
+        ][:2]
+        default_series += [
+            group for group in default_series_order if group not in default_series
+        ][: 2 - len(default_series)]
+        area_options = sorted(
+            area_options,
+            key=lambda group: (group not in nearby_groups, group),
+        )
         selected_series = st.multiselect(
             f"放在同一張圖的{grouping}（最多 5 個）",
             area_options,
@@ -1017,6 +1094,15 @@ with tab_cmp:
 with tab_station:
     names = sorted(base["station"].unique())
     default_index = names.index(worst["station"]) if worst["station"] in names else 0
+    location = st.session_state.get("nearby_location")
+    if location:
+        nearest_current = nearest_stations(
+            snap[snap["station"].isin(names)],
+            location["latitude"],
+            location["longitude"],
+        )
+        if not nearest_current.empty:
+            default_index = names.index(nearest_current.iloc[0]["station"])
 
     station = st.selectbox(
         "選擇測站",
@@ -1133,6 +1219,14 @@ with tab_station_time:
         station_avg = (
             heatmap_data.groupby("station")["aqi"].mean().sort_values(ascending=False)
         )
+        nearby_counties = set(st.session_state.get("nearby_counties", []))
+        nearby_station_names = heatmap_data.loc[
+            heatmap_data["county"].isin(nearby_counties)
+        ].groupby("station")["aqi"].mean().sort_values(ascending=False).index.tolist()
+        station_order_all = nearby_station_names + [
+            station for station in station_avg.index
+            if station not in nearby_station_names
+        ]
         max_stations = min(50, len(station_avg))
         station_count = st.slider(
             "顯示測站數（依平均 AQI 由高至低）",
@@ -1141,7 +1235,7 @@ with tab_station_time:
             value=min(20, max_stations),
             key="heatmap_station_count",
         )
-        chosen_stations = station_avg.head(station_count).index.tolist()
+        chosen_stations = station_order_all[:station_count]
         heatmap_data = heatmap_data[heatmap_data["station"].isin(chosen_stations)]
         heatmap_data["時間"] = heatmap_data["publishtime"].dt.strftime("%m/%d %H:%M")
         heatmap_data["測站"] = heatmap_data["station"]
