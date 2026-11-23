@@ -571,6 +571,39 @@ def draw_map(
         slot.pydeck_chart(deck, key="animated_air_quality_map")
 
 
+@st.fragment
+def render_map_playback(
+    raw,
+    times,
+    aqi_min,
+    status_pick,
+    metric,
+    low,
+    high,
+    map_data,
+    map_zoom,
+    map_center,
+    map_mode,
+    highlighted_counties,
+    focused_county,
+):
+    render_map_playback(
+        raw=raw,
+        times=times,
+        aqi_min=aqi_min,
+        status_pick=status_pick,
+        metric=metric,
+        low=low,
+        high=high,
+        map_data=map_data,
+        map_zoom=map_zoom,
+        map_center=map_center,
+        map_mode=map_mode,
+        highlighted_counties=highlighted_counties,
+        focused_county=focused_county,
+    )
+
+
 @st.cache_data
 def load_county_boundaries():
     """載入縣界並略過遠離臺灣周邊的外海多邊形。"""
