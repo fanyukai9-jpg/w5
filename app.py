@@ -751,11 +751,12 @@ raw = None
 source_note = ""
 
 if source == "即時 API":
-    api_key = st.sidebar.text_input(
-        "環境部 API 金鑰",
-        type="password",
-        value=secret_key(),
-    )
+    api_key = secret_key()
+    if not api_key:
+        api_key = st.sidebar.text_input(
+            "環境部 API 金鑰",
+            type="password",
+        )
 
     refresh_mode = st.sidebar.selectbox(
         "資料更新",
