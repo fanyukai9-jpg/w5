@@ -427,14 +427,27 @@ def draw_map(
                 "PolygonLayer",
                 data=county_polygon_data(),
                 id="county-boundaries",
-                stroked=True,
+                # This layer only captures county clicks. Draw every visible
+                # border from the source GeoJSON below to keep its geometry
+                # identical in flat and pitched map views.
+                stroked=False,
                 filled=True,
                 get_polygon="polygon",
                 get_fill_color=[0, 0, 0, 1],
-                get_line_color=[170, 180, 188, 155],
-                line_width_min_pixels=0.8,
                 pickable=True,
                 auto_highlight=True,
+            )
+        )
+        boundary_layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": boundary_features},
+                id="county-outline",
+                stroked=True,
+                filled=False,
+                get_line_color=[170, 180, 188, 155],
+                line_width_min_pixels=0.8,
+                pickable=False,
             )
         )
     highlighted_features = [
@@ -469,14 +482,24 @@ def draw_map(
                     "PolygonLayer",
                     data=focused_polygons,
                     id="focused-county-toggle",
-                    stroked=True,
+                    stroked=False,
                     filled=True,
                     get_polygon="polygon",
                     get_fill_color=[0, 0, 0, 1],
-                    get_line_color=[255, 255, 255, 255],
-                    line_width_min_pixels=4,
                     pickable=True,
                     auto_highlight=True,
+                )
+            )
+            boundary_layers.append(
+                pdk.Layer(
+                    "GeoJsonLayer",
+                    data={"type": "FeatureCollection", "features": focused_features},
+                    id="focused-county-outline",
+                    stroked=True,
+                    filled=False,
+                    get_line_color=[255, 255, 255, 255],
+                    line_width_min_pixels=4,
+                    pickable=False,
                 )
             )
 
