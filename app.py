@@ -508,8 +508,8 @@ k3.metric("AQI > 100 測站", int((snap["aqi"] > 100).sum()))
 k4.metric("空氣良好比例", f"{(snap['aqi'] <= 50).mean() * 100:.0f}%")
 
 
-tab_map, tab_trend, tab_cmp, tab_station, tab_advanced, tab_data = st.tabs(
-    ["即時概況", "時間趨勢", "區域比較", "測站分析", "時序熱圖", "資料明細"]
+tab_map, tab_trend, tab_cmp, tab_station, tab_station_time, tab_data = st.tabs(
+    ["即時概況", "時間趨勢", "區域比較", "測站分析", "測站 AQI 時序", "資料明細"]
 )
 
 
@@ -575,8 +575,15 @@ with tab_trend:
             st.info("請至少選一個測站。")
 
     with column2:
-        st.subheader("篩選測站平均指標趨勢")
-        st.caption("呈現目前篩選範圍內，各時點有效測站的平均值。")
+        st.subheader("多縣市污染指標變化")
+        st.caption("多個縣市共用時間軸並重疊顯示，呈現方式依課堂面積圖範例。")
+
+        grouping = st.radio(
+            "分組方式",
+            ["縣市", "區域"],
+            horizontal=True,
+        )
+        group_column = "county" if grouping == "縣市" else "region"
 
         metric2 = st.selectbox(
             "指標",
@@ -586,17 +593,27 @@ with tab_trend:
             key="area_metric",
         )
 
-        area_data = (
-            filtered.dropna(subset=[metric2])
-            .groupby("publishtime")[metric2]
-            .mean()
-            .rename(LABELS[metric2])
-            .to_frame()
+        area_options = sorted(filtered[group_column].dropna().unique())
+        group_means = filtered.groupby(group_column)[metric2].mean().dropna()
+        default_series = group_means.sort_values(ascending=False).head(2).index.tolist()
+        selected_series = st.multiselect(
+            f"放在同一張圖的{grouping}（最多 5 個）",
+            area_options,
+            default=default_series,
+            max_selections=5,
+            key=f"area_series_{group_column}",
+        )
+
+        area_data = filtered[filtered[group_column].isin(selected_series)].pivot_table(
+            index="publishtime",
+            columns=group_column,
+            values=metric2,
+            aggfunc="mean",
         )
         if area_data.empty:
             st.info(f"目前篩選條件下沒有可繪製的 {LABELS[metric2]} 資料。")
         else:
-            st.area_chart(area_data)
+            st.area_chart(area_data, stack=False)
 
 
 # ---------- 比較 ----------
@@ -870,11 +887,11 @@ with tab_data:
 
 
 # ---------- 進階圖表：Altair 熱圖 ----------
-with tab_advanced:
-    st.subheader("各測站 AQI 時序熱圖")
+with tab_station_time:
+    st.subheader("各測站 AQI 時序分布")
     st.caption(
-        "以熱圖同時比較多個測站在不同時間的 AQI。顏色依 AQI 分級；"
-        "將滑鼠移到色塊上可查看縣市、測站、時間與數值。"
+        "Altair 延伸圖：以色階格比較測站與發布時間，使用 st.altair_chart 繪製；"
+        "移到色塊上可查看縣市、測站、時間與 AQI。"
     )
 
     heatmap_data = filtered.dropna(subset=["aqi", "publishtime"]).copy()
@@ -938,5 +955,5 @@ with tab_advanced:
             heatmap,
             width="stretch",
             theme="streamlit",
-            alt="各空氣品質測站在不同發布時間的 AQI 熱圖",
+            alt="各空氣品質測站 AQI 時序分布圖",
         )
