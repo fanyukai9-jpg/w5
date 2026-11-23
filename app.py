@@ -727,7 +727,8 @@ if source == "即時 API":
     refresh_mode = st.sidebar.selectbox(
         "資料更新",
         ["手動更新", "整點更新"],
-        index=0,
+        index=1,
+        key="refresh_mode",
     )
 
     if refresh_mode == "整點更新" and api_key:
@@ -1466,66 +1467,104 @@ with tab_station_time:
         st.info("目前篩選條件下沒有可繪製的 AQI 時序資料。")
     else:
         county_options = sorted(heatmap_data["county"].dropna().unique())
-        nearby_anchor = st.session_state.get("nearby_anchor_county")
-        default_county = (
-            nearby_anchor if nearby_anchor in county_options else county_options[0]
-        )
-        if st.session_state.get("heatmap_county") not in county_options:
-            st.session_state["heatmap_county"] = default_county
-        selected_county = st.selectbox(
-            "選擇縣市",
-            county_options,
-            index=county_options.index(default_county),
-            key="heatmap_county",
-        )
-        heatmap_data = heatmap_data[heatmap_data["county"] == selected_county]
-        station_avg = (
-            heatmap_data.groupby("station")["aqi"].mean().sort_values(ascending=False)
-        )
-        chosen_stations = station_avg.index.tolist()
-        heatmap_data["時間"] = heatmap_data["publishtime"].dt.strftime("%m/%d %H:%M")
-        heatmap_data["測站"] = heatmap_data["station"]
-        heatmap_data["縣市"] = heatmap_data["county"]
-        heatmap_data["AQI"] = heatmap_data["aqi"]
-
-        station_order = [station for station in chosen_stations]
-        time_order = [
-            value.strftime("%m/%d %H:%M")
-            for value in sorted(heatmap_data["publishtime"].unique())
-        ]
-        heatmap = (
-            alt.Chart(heatmap_data)
-            .mark_rect(stroke="white", strokeWidth=0.4)
-            .encode(
-                x=alt.X("時間:O", sort=time_order, title="發布時間", axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y(
-                    "測站:N",
-                    sort=station_order,
-                    title="測站",
-                    axis=alt.Axis(labelLimit=260),
-                ),
-                color=alt.Color(
-                    "AQI:Q",
-                    title="AQI",
-                    scale=alt.Scale(
-                        domain=[0, 50, 100, 150, 200, 300],
-                        range=["#00b050", "#ffd400", "#ff7e00", "#e60000", "#8f3f97", "#7e0023"],
-                        clamp=True,
-                    ),
-                ),
-                tooltip=[
-                    alt.Tooltip("縣市:N"),
-                    alt.Tooltip("測站:N"),
-                    alt.Tooltip("時間:O"),
-                    alt.Tooltip("AQI:Q", format=".0f"),
-                ],
+        if not county_options:
+            st.info("目前篩選條件下沒有可選的縣市。")
+        else:
+            nearby_anchor = st.session_state.get("nearby_anchor_county")
+            nearby_counties = st.session_state.get("nearby_counties", [])
+            default_counties = []
+            if nearby_anchor in county_options:
+                default_counties.append(nearby_anchor)
+            default_counties.extend(
+                county for county in nearby_counties
+                if county in county_options and county not in default_counties
             )
-            .properties(height=max(360, 24 * len(chosen_stations)))
-            .interactive()
-        )
-        st.altair_chart(
-            heatmap,
-            width="stretch",
-            theme="streamlit",
-            alt="各空氣品質測站 AQI 時序分布圖",
-        )
+            if not default_counties:
+                county_avg = heatmap_data.groupby("county")["aqi"].mean()
+                default_counties = [str(county_avg.idxmax())]
+            default_counties = default_counties[:5]
+
+            selected_before = st.session_state.get("heatmap_counties")
+            if "heatmap_counties" not in st.session_state:
+                st.session_state["heatmap_counties"] = default_counties
+            elif isinstance(selected_before, list):
+                st.session_state["heatmap_counties"] = [
+                    county for county in selected_before if county in county_options
+                ][:5]
+            else:
+                st.session_state["heatmap_counties"] = default_counties
+
+            selected_counties = st.multiselect(
+                "選擇縣市（可多選）",
+                county_options,
+                key="heatmap_counties",
+                max_selections=5,
+                placeholder="輸入縣市名稱快速搜尋",
+                help="可同時比較最多 5 個縣市；附近縣市會優先預選。",
+            )
+            if not selected_counties:
+                st.info("請選擇至少一個縣市以顯示時序分布。")
+            else:
+                heatmap_data = heatmap_data[
+                    heatmap_data["county"].isin(selected_counties)
+                ].copy()
+                station_order = []
+                for county in selected_counties:
+                    county_stations = (
+                        heatmap_data.loc[heatmap_data["county"] == county]
+                        .groupby("station")["aqi"]
+                        .mean()
+                        .sort_values(ascending=False)
+                        .index.tolist()
+                    )
+                    station_order.extend(county_stations)
+
+                st.caption(
+                    f"已選 {len(selected_counties)} 個縣市、"
+                    f"{len(station_order)} 個測站。"
+                )
+                heatmap_data["時間"] = heatmap_data["publishtime"].dt.strftime("%m/%d %H:%M")
+                heatmap_data["測站"] = heatmap_data["station"]
+                heatmap_data["縣市"] = heatmap_data["county"]
+                heatmap_data["AQI"] = heatmap_data["aqi"]
+
+                time_order = [
+                    value.strftime("%m/%d %H:%M")
+                    for value in sorted(heatmap_data["publishtime"].unique())
+                ]
+                heatmap = (
+                    alt.Chart(heatmap_data)
+                    .mark_rect(stroke="white", strokeWidth=0.4)
+                    .encode(
+                        x=alt.X("時間:O", sort=time_order, title="發布時間", axis=alt.Axis(labelAngle=-45)),
+                        y=alt.Y(
+                            "測站:N",
+                            sort=station_order,
+                            title="測站",
+                            axis=alt.Axis(labelLimit=260),
+                        ),
+                        color=alt.Color(
+                            "AQI:Q",
+                            title="AQI",
+                            scale=alt.Scale(
+                                domain=[0, 50, 100, 150, 200, 300],
+                                range=["#00b050", "#ffd400", "#ff7e00", "#e60000", "#8f3f97", "#7e0023"],
+                                clamp=True,
+                            ),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("縣市:N"),
+                            alt.Tooltip("測站:N"),
+                            alt.Tooltip("時間:O"),
+                            alt.Tooltip("AQI:Q", format=".0f"),
+                        ],
+                    )
+                    .properties(height=max(360, 24 * len(station_order)))
+                    .interactive()
+                )
+                st.altair_chart(
+                    heatmap,
+                    width="stretch",
+                    theme="streamlit",
+                    alt="各空氣品質測站 AQI 時序分布圖",
+                )
