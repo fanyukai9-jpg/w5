@@ -5,6 +5,7 @@ API 失敗時會自動退回 CSV。
 """
 
 import time
+from math import asin, cos, radians, sin, sqrt
 from datetime import datetime
 import pandas as pd
 import requests
@@ -27,16 +28,50 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .mapboxgl-ctrl-zoom-in,
-    .mapboxgl-ctrl-zoom-out {
-        display: none !important;
+location_component = st.components.v2.component(
+    name="air_quality_nearby_locator",
+    html='<button id="locate">📍 定位並顯示附近測站</button>',
+    css="""
+    button {
+        border: 1px solid var(--st-primary-color);
+        border-radius: 0.5rem;
+        padding: 0.45rem 0.8rem;
+        color: var(--st-primary-color);
+        background: var(--st-background-color);
+        font: inherit;
+        cursor: pointer;
     }
-    </style>
+    button:disabled { opacity: 0.65; cursor: wait; }
     """,
-    unsafe_allow_html=True,
+    js="""
+    export default function({ parentElement, setStateValue, data }) {
+        const button = parentElement.querySelector("#locate");
+        if (data?.located) button.textContent = "📍 已定位｜重新定位附近測站";
+        button.onclick = () => {
+            if (!navigator.geolocation) {
+                setStateValue("error", {message: "此瀏覽器不支援定位功能。"});
+                return;
+            }
+            button.disabled = true;
+            button.textContent = "正在取得位置…";
+            navigator.geolocation.getCurrentPosition(
+                ({coords}) => {
+                    setStateValue("location", {
+                        latitude: coords.latitude,
+                        longitude: coords.longitude,
+                        accuracy: coords.accuracy
+                    });
+                },
+                (error) => {
+                    setStateValue("error", {message: error.message});
+                    button.disabled = false;
+                    button.textContent = "📍 重新定位附近測站";
+                },
+                {enableHighAccuracy: false, timeout: 10000, maximumAge: 300000}
+            );
+        };
+    }
+    """,
 )
 
 ALIASES = {
@@ -258,6 +293,7 @@ def draw_map(
     high: float,
     slot,
     zoom: float = 6.4,
+    center: tuple[float, float] = (23.7, 121.0),
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
@@ -313,10 +349,10 @@ def draw_map(
 
     deck = pdk.Deck(
         layers=[layer],
-        views=[pdk.View(type="MapView", controller=False)],
+        views=[pdk.View(type="MapView", controller=True)],
         initial_view_state=pdk.ViewState(
-            latitude=23.7,
-            longitude=121.0,
+            latitude=center[0],
+            longitude=center[1],
             zoom=zoom,
             pitch=58,
             bearing=0,
@@ -330,6 +366,21 @@ def draw_map(
     )
 
     slot.pydeck_chart(deck)
+
+
+def nearest_stations(data: pd.DataFrame, latitude: float, longitude: float):
+    """計算目前資料中每個測站與使用者位置的直線距離。"""
+    data = data.dropna(subset=["latitude", "longitude"]).copy()
+    lat1, lon1 = radians(latitude), radians(longitude)
+
+    def distance_km(row):
+        lat2, lon2 = radians(row["latitude"]), radians(row["longitude"])
+        dlat, dlon = lat2 - lat1, lon2 - lon1
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        return 6371 * 2 * asin(sqrt(a))
+
+    data["距離（公里）"] = data.apply(distance_km, axis=1)
+    return data.sort_values("距離（公里）")
 
 
 # ---------- 側邊欄：資料來源與即時更新 ----------
@@ -523,8 +574,70 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_station_time, tab_data = st.tabs(
 with tab_map:
     st.caption(
         f"測站柱體高度與顏色代表{LABELS[metric]}高低；"
-        "移到柱體上可查看測站狀態與數值。"
+        "可拖曳平移、滾輪縮放、按住右鍵旋轉；移到柱體上可查看數值。"
     )
+
+    location_result = location_component(
+        data={"located": bool(st.session_state.get("nearby_location"))},
+        default={"location": None, "error": None},
+        on_location_change=lambda: None,
+        on_error_change=lambda: None,
+        key="nearby_location_component",
+    )
+    if location_result.location:
+        st.session_state["nearby_location"] = location_result.location
+        st.session_state.pop("nearby_location_error", None)
+    if location_result.error:
+        st.session_state["nearby_location_error"] = location_result.error.get(
+            "message", "無法取得定位。"
+        )
+    if st.session_state.get("nearby_location_error"):
+        st.warning(
+            "無法取得位置。請確認瀏覽器已允許定位，或繼續使用全台測站地圖。"
+        )
+
+    map_data = snap
+    map_center = (23.7, 121.0)
+    map_zoom = 6.4
+    location = st.session_state.get("nearby_location")
+    if location:
+        lat, lon = location["latitude"], location["longitude"]
+        current_sites = raw[
+            (raw["publishtime"] == t_sel)
+            & raw["aqi"].ge(aqi_min)
+            & raw["status"].isin(status_pick)
+        ]
+        nearby = nearest_stations(current_sites, lat, lon)
+        if nearby.empty:
+            st.info("目前條件下沒有可定位的測站，請調整 AQI 或狀態篩選。")
+        else:
+            st.subheader("📍 你附近的空品測站")
+            st.caption(
+                "依距離列出最近 5 站；定位只在你按下按鈕後取得。"
+                "附近結果沿用 AQI 與狀態條件，不受區域及縣市篩選限制。"
+            )
+            nearby_display = nearby.head(5).copy()
+            nearby_display["距離（公里）"] = nearby_display["距離（公里）"].round(1)
+            st.dataframe(
+                nearby_display[
+                    ["county", "sitename", "距離（公里）", "aqi", "status"]
+                ].rename(
+                    columns={
+                        "county": "縣市",
+                        "sitename": "測站",
+                        "aqi": "AQI",
+                        "status": "狀態",
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+            map_data = nearby.head(15)
+            map_center = (
+                float(nearby.iloc[0]["latitude"]),
+                float(nearby.iloc[0]["longitude"]),
+            )
+            map_zoom = 9.5
 
     play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
@@ -543,7 +656,9 @@ with tab_map:
             time.sleep(0.8)
     else:
         draw_map(
-            snap, metric, low, high, map_slot,
+            map_data, metric, low, high, map_slot,
+            zoom=map_zoom,
+            center=map_center,
         )
 
 
