@@ -353,7 +353,6 @@ def draw_map(
     if focused_county:
         data.loc[data["county"] == focused_county, "elevation"] *= 1.4
     data["radius_m"] = 2500 + ratio * 6500
-    data["focus_ring_radius"] = data["radius_m"] * 1.18
     data["size_m"] = 100 + ratio * 900
 
     if pdk is None:
@@ -505,30 +504,8 @@ def draw_map(
                 )
             )
 
-    station_layers = [*boundary_layers, layer]
-    if focused_county and map_mode == "測站平面圖":
-        focused_stations = data.loc[data["county"] == focused_county]
-        if not focused_stations.empty:
-            station_layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    data=focused_stations[
-                        ["latitude", "longitude", "focus_ring_radius"]
-                    ],
-                    id="focused-station-rings",
-                    get_position="[longitude, latitude]",
-                    get_radius="focus_ring_radius",
-                    get_fill_color=[0, 0, 0, 0],
-                    get_line_color=[255, 255, 255, 255],
-                    stroked=True,
-                    filled=False,
-                    line_width_min_pixels=2,
-                    pickable=False,
-                )
-            )
-
     deck = pdk.Deck(
-        layers=station_layers,
+        layers=[*boundary_layers, layer],
         views=[pdk.View(type="MapView", controller=True)],
         initial_view_state=pdk.ViewState(
             latitude=center[0],
@@ -1479,37 +1456,33 @@ with tab_data:
 
 # ---------- 進階圖表：Altair 熱圖 ----------
 with tab_station_time:
-    st.subheader("各測站 AQI 時序分布")
+    st.subheader("縣市測站 AQI 時序分布")
     st.caption(
-        "Altair 延伸圖：以色階格比較測站與發布時間，使用 st.altair_chart 繪製；"
-        "移到色塊上可查看縣市、測站、時間與 AQI。"
+        "選擇縣市查看該縣市各測站隨時間的 AQI 變化；移到色塊上可查看測站、時間與 AQI。"
     )
 
     heatmap_data = filtered.dropna(subset=["aqi", "publishtime"]).copy()
     if heatmap_data.empty:
         st.info("目前篩選條件下沒有可繪製的 AQI 時序資料。")
     else:
+        county_options = sorted(heatmap_data["county"].dropna().unique())
+        nearby_anchor = st.session_state.get("nearby_anchor_county")
+        default_county = (
+            nearby_anchor if nearby_anchor in county_options else county_options[0]
+        )
+        if st.session_state.get("heatmap_county") not in county_options:
+            st.session_state["heatmap_county"] = default_county
+        selected_county = st.selectbox(
+            "選擇縣市",
+            county_options,
+            index=county_options.index(default_county),
+            key="heatmap_county",
+        )
+        heatmap_data = heatmap_data[heatmap_data["county"] == selected_county]
         station_avg = (
             heatmap_data.groupby("station")["aqi"].mean().sort_values(ascending=False)
         )
-        nearby_counties = set(st.session_state.get("nearby_counties", []))
-        nearby_station_names = heatmap_data.loc[
-            heatmap_data["county"].isin(nearby_counties)
-        ].groupby("station")["aqi"].mean().sort_values(ascending=False).index.tolist()
-        station_order_all = nearby_station_names + [
-            station for station in station_avg.index
-            if station not in nearby_station_names
-        ]
-        max_stations = min(50, len(station_avg))
-        station_count = st.slider(
-            "顯示測站數（依平均 AQI 由高至低）",
-            min_value=1,
-            max_value=max_stations,
-            value=min(20, max_stations),
-            key="heatmap_station_count",
-        )
-        chosen_stations = station_order_all[:station_count]
-        heatmap_data = heatmap_data[heatmap_data["station"].isin(chosen_stations)]
+        chosen_stations = station_avg.index.tolist()
         heatmap_data["時間"] = heatmap_data["publishtime"].dt.strftime("%m/%d %H:%M")
         heatmap_data["測站"] = heatmap_data["station"]
         heatmap_data["縣市"] = heatmap_data["county"]
@@ -1547,7 +1520,7 @@ with tab_station_time:
                     alt.Tooltip("AQI:Q", format=".0f"),
                 ],
             )
-            .properties(height=max(360, 24 * station_count))
+            .properties(height=max(360, 24 * len(chosen_stations)))
             .interactive()
         )
         st.altair_chart(
