@@ -109,6 +109,29 @@ REGIONS = {
     "離島": ["澎湖縣", "金門縣", "連江縣"],
 }
 
+# 臺灣本島縣市相鄰關係；離島只關聯自身。
+COUNTY_NEIGHBORS = {
+    "基隆市": ["新北市"],
+    "臺北市": ["新北市"],
+    "新北市": ["基隆市", "臺北市", "桃園市", "宜蘭縣"],
+    "桃園市": ["新北市", "新竹縣"],
+    "新竹市": ["新竹縣"],
+    "新竹縣": ["桃園市", "新竹市", "苗栗縣"],
+    "苗栗縣": ["新竹縣", "臺中市"],
+    "臺中市": ["苗栗縣", "彰化縣", "南投縣", "花蓮縣"],
+    "彰化縣": ["臺中市", "南投縣", "雲林縣"],
+    "南投縣": ["臺中市", "彰化縣", "雲林縣", "嘉義縣", "高雄市", "花蓮縣"],
+    "雲林縣": ["彰化縣", "南投縣", "嘉義縣"],
+    "嘉義市": ["嘉義縣"],
+    "嘉義縣": ["雲林縣", "南投縣", "嘉義市", "臺南市", "高雄市"],
+    "臺南市": ["嘉義縣", "高雄市"],
+    "高雄市": ["臺南市", "嘉義縣", "南投縣", "臺東縣", "屏東縣"],
+    "屏東縣": ["高雄市", "臺東縣"],
+    "宜蘭縣": ["新北市", "花蓮縣"],
+    "花蓮縣": ["宜蘭縣", "臺中市", "南投縣", "臺東縣"],
+    "臺東縣": ["花蓮縣", "高雄市", "屏東縣"],
+}
+
 COUNTY_TO_REGION = {
     county: region
     for region, counties in REGIONS.items()
@@ -294,6 +317,7 @@ def draw_map(
     slot,
     zoom: float = 6.4,
     center: tuple[float, float] = (23.7, 121.0),
+    map_mode: str = "3D AQI 柱狀圖",
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
@@ -314,6 +338,7 @@ def draw_map(
         else pd.Series(0.5, index=data.index)
     )
     data["elevation"] = pd.to_numeric(data[metric], errors="coerce").clip(lower=0).fillna(0)
+    data["radius_m"] = 2500 + ratio * 6500
     data["size_m"] = 100 + ratio * 900
 
     if pdk is None:
@@ -327,25 +352,42 @@ def draw_map(
         )
         return
 
-    layer = pdk.Layer(
-        "ColumnLayer",
-        data=data[
-            [
-                "sitename", "county", "status", "latitude", "longitude",
-                "rgba", "val", "elevation",
-            ]
-        ],
-        get_position="[longitude, latitude]",
-        get_elevation="elevation",
-        elevation_scale=70,
-        get_fill_color="rgba",
-        get_radius=2200,
-        radius_min_pixels=4,
-        radius_max_pixels=14,
-        extruded=True,
-        material=True,
-        pickable=True,
-    )
+    if map_mode == "測站平面圖":
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=data[
+                [
+                    "sitename", "county", "status", "latitude", "longitude",
+                    "rgba", "val", "radius_m",
+                ]
+            ],
+            get_position="[longitude, latitude]",
+            get_fill_color="rgba",
+            get_radius="radius_m",
+            radius_min_pixels=5,
+            radius_max_pixels=16,
+            pickable=True,
+        )
+    else:
+        layer = pdk.Layer(
+            "ColumnLayer",
+            data=data[
+                [
+                    "sitename", "county", "status", "latitude", "longitude",
+                    "rgba", "val", "elevation",
+                ]
+            ],
+            get_position="[longitude, latitude]",
+            get_elevation="elevation",
+            elevation_scale=70,
+            get_fill_color="rgba",
+            get_radius=2200,
+            radius_min_pixels=4,
+            radius_max_pixels=14,
+            extruded=True,
+            material=True,
+            pickable=True,
+        )
 
     deck = pdk.Deck(
         layers=[layer],
@@ -354,7 +396,7 @@ def draw_map(
             latitude=center[0],
             longitude=center[1],
             zoom=zoom,
-            pitch=58,
+            pitch=58 if map_mode == "3D AQI 柱狀圖" else 0,
             bearing=0,
         ),
         tooltip={
@@ -457,6 +499,49 @@ metrics = [metric for metric in LABELS if metric in raw.columns]
 times = sorted(raw["publishtime"].dropna().unique())
 times = [pd.Timestamp(value) for value in times]
 
+# 定位完成後，在建立側邊欄篩選器前套用測站所在縣市與相鄰縣市，
+# 讓所有圖表與明細使用同一組縣市資料。
+locator_state = st.session_state.get("nearby_location_component")
+component_location = (
+    locator_state.get("location")
+    if isinstance(locator_state, dict)
+    else getattr(locator_state, "location", None)
+)
+if component_location:
+    st.session_state["nearby_location"] = component_location
+location = st.session_state.get("nearby_location")
+if location:
+    location_token = (
+        round(float(location["latitude"]), 4),
+        round(float(location["longitude"]), 4),
+    )
+    if location_token != st.session_state.get("applied_location_token"):
+        latest_sites = raw[raw["publishtime"] == times[-1]]
+        closest = nearest_stations(
+            latest_sites,
+            float(location["latitude"]),
+            float(location["longitude"]),
+        )
+        if not closest.empty:
+            anchor_county = str(closest.iloc[0]["county"])
+            nearby_counties = [
+                anchor_county,
+                *COUNTY_NEIGHBORS.get(anchor_county, []),
+            ]
+            available_counties = set(raw["county"].dropna().unique())
+            nearby_counties = sorted(
+                set(nearby_counties) & available_counties
+            )
+            nearby_regions = sorted(
+                set(raw.loc[raw["county"].isin(nearby_counties), "region"])
+            )
+            st.session_state["nearby_anchor_county"] = anchor_county
+            st.session_state["nearby_counties"] = nearby_counties
+            st.session_state["region_filter"] = nearby_regions
+            st.session_state["county_filter"] = nearby_counties
+            st.session_state["_last_region_filter"] = nearby_regions
+            st.session_state["applied_location_token"] = location_token
+
 
 # ---------- 側邊欄：篩選條件 ----------
 regions_all = [
@@ -465,20 +550,28 @@ regions_all = [
     if region in raw["region"].unique()
 ]
 
+if "region_filter" not in st.session_state:
+    st.session_state["region_filter"] = regions_all
 region_pick = st.sidebar.multiselect(
     "區域",
     regions_all,
-    default=regions_all,
+    key="region_filter",
 )
 
 county_opts = sorted(
     raw[raw["region"].isin(region_pick)]["county"].unique()
 )
+previous_regions = st.session_state.get("_last_region_filter")
+if previous_regions is not None and set(previous_regions) != set(region_pick):
+    st.session_state["county_filter"] = county_opts
+st.session_state["_last_region_filter"] = list(region_pick)
+if "county_filter" not in st.session_state:
+    st.session_state["county_filter"] = county_opts
 
 county_pick = st.sidebar.multiselect(
     "縣市",
     county_opts,
-    default=county_opts,
+    key="county_filter",
 )
 
 metric = st.sidebar.selectbox(
@@ -528,13 +621,18 @@ low, high = raw[metric].min(), raw[metric].max()
 
 # ---------- 標題與指標 ----------
 st.title("臺灣空氣品質監測")
+location_scope_note = ""
+if st.session_state.get("nearby_anchor_county"):
+    location_scope_note = (
+        f"｜定位周邊：{st.session_state['nearby_anchor_county']}及相鄰縣市"
+    )
 st.caption(
     "即時掌握各地空氣品質，追蹤污染變化，並比較區域與測站。\n\n"
     f"資料來源：{source_note}｜"
     f"資料範圍：{times[0]:%m/%d %H:%M}–{times[-1]:%m/%d %H:%M}｜"
     f"目前檢視：{t_sel:%m/%d %H:%M}｜"
     f"符合條件的測站：{len(snap)} / "
-    f"{base[base['publishtime'] == t_sel].shape[0]}"
+    f"{base[base['publishtime'] == t_sel].shape[0]}{location_scope_note}"
 )
 
 if snap.empty:
@@ -573,7 +671,7 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_station_time, tab_data = st.tabs(
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        f"測站柱體高度與顏色代表{LABELS[metric]}高低；"
+        f"測站顏色代表{LABELS[metric]}級距；平面圖點大小或 3D 柱高代表數值高低。"
         "可拖曳平移、滾輪縮放、按住右鍵旋轉；移到柱體上可查看數值。"
     )
 
@@ -596,6 +694,14 @@ with tab_map:
             "無法取得位置。請確認瀏覽器已允許定位，或繼續使用全台測站地圖。"
         )
 
+    map_mode = st.radio(
+        "地圖樣式",
+        ["測站平面圖", "3D AQI 柱狀圖"],
+        horizontal=True,
+        index=1,
+        key="map_mode",
+    )
+
     map_data = snap
     map_center = (23.7, 121.0)
     map_zoom = 6.4
@@ -604,6 +710,7 @@ with tab_map:
         lat, lon = location["latitude"], location["longitude"]
         current_sites = raw[
             (raw["publishtime"] == t_sel)
+            & raw["county"].isin(county_pick)
             & raw["aqi"].ge(aqi_min)
             & raw["status"].isin(status_pick)
         ]
@@ -613,8 +720,8 @@ with tab_map:
         else:
             st.subheader("📍 你附近的空品測站")
             st.caption(
-                "依距離列出最近 5 站；定位只在你按下按鈕後取得。"
-                "附近結果沿用 AQI 與狀態條件，不受區域及縣市篩選限制。"
+                "依距離列出最近 5 站；所有圖表共用定位後的縣市範圍，"
+                "並沿用 AQI 與狀態條件。"
             )
             nearby_display = nearby.head(5).copy()
             nearby_display["距離（公里）"] = nearby_display["距離（公里）"].round(1)
@@ -652,6 +759,9 @@ with tab_map:
             )
             draw_map(
                 frame, metric, low, high, map_slot,
+                zoom=map_zoom,
+                center=map_center,
+                map_mode=map_mode,
             )
             time.sleep(0.8)
     else:
@@ -659,6 +769,7 @@ with tab_map:
             map_data, metric, low, high, map_slot,
             zoom=map_zoom,
             center=map_center,
+            map_mode=map_mode,
         )
 
 
