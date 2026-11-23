@@ -575,14 +575,8 @@ with tab_trend:
             st.info("請至少選一個測站。")
 
     with column2:
-        st.subheader("各區域污染指標變化")
-        grouping = st.radio(
-            "分組方式",
-            ["縣市", "區域"],
-            horizontal=True,
-        )
-
-        group_column = "county" if grouping == "縣市" else "region"
+        st.subheader("篩選測站平均指標趨勢")
+        st.caption("呈現目前篩選範圍內，各時點有效測站的平均值。")
 
         metric2 = st.selectbox(
             "指標",
@@ -591,25 +585,18 @@ with tab_trend:
             format_func=LABELS.get,
             key="area_metric",
         )
-        area_stack_options = {
-            "分層重疊（layered）": False,
-            "中心堆疊（center）": "center",
-            "標準化 100%（normalize）": "normalize",
-        }
-        area_stack_label = st.selectbox(
-            "堆疊樣式",
-            list(area_stack_options),
-            key="area_stack",
-        )
 
-        area_data = filtered.pivot_table(
-            index="publishtime",
-            columns=group_column,
-            values=metric2,
-            aggfunc="mean",
+        area_data = (
+            filtered.dropna(subset=[metric2])
+            .groupby("publishtime")[metric2]
+            .mean()
+            .rename(LABELS[metric2])
+            .to_frame()
         )
-
-        st.area_chart(area_data, stack=area_stack_options[area_stack_label])
+        if area_data.empty:
+            st.info(f"目前篩選條件下沒有可繪製的 {LABELS[metric2]} 資料。")
+        else:
+            st.area_chart(area_data)
 
 
 # ---------- 比較 ----------
