@@ -1,6 +1,5 @@
 """臺灣空氣品質監測
-資料：環境部 AQI 歷史測站資料。可切換本機 CSV 快照或即時 API；
-API 失敗時會自動退回 CSV。
+資料：環境部 AQI 即時測站 API。
 執行：streamlit run app.py
 """
 
@@ -22,7 +21,6 @@ except ImportError:  # 沒有 pydeck 就退回 st.map
     pdk = None
 
 
-CSV_PATH = "aqx_p_488.csv"
 API_URL = "https://data.moenv.gov.tw/api/v2/aqx_p_488"
 
 st.set_page_config(
@@ -186,18 +184,6 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
         df["station"] = df["county"] + " " + df["sitename"]
 
     return df
-
-
-@st.cache_data
-def load_csv(path: str) -> pd.DataFrame:
-    """讀取本機 CSV 快照。"""
-    for encoding in ("utf-8-sig", "utf-8", "big5", "cp950"):
-        try:
-            return clean(pd.read_csv(path, encoding=encoding))
-        except UnicodeDecodeError:
-            continue
-
-    raise ValueError("無法判斷檔案編碼")
 
 
 @st.cache_data(ttl=30, show_spinner="向環境部抓取最新資料…")
@@ -741,75 +727,47 @@ def nearest_stations(data: pd.DataFrame, latitude: float, longitude: float):
 
 # ---------- 側邊欄：資料來源與即時更新 ----------
 st.sidebar.title("🌫️ 空品監測條件")
-has_api_key = bool(secret_key())
-source = st.sidebar.radio(
-    "資料來源",
-    ["本機 CSV 快照", "即時 API"],
-    index=1 if has_api_key else 0,
+api_key = secret_key()
+if not api_key:
+    st.error("尚未設定環境部 API 金鑰，請管理者在 Streamlit Cloud 的 Secrets 設定 MOENV_API_KEY。")
+    st.stop()
+
+refresh_mode = st.sidebar.selectbox(
+    "資料更新",
+    ["手動更新", "整點更新"],
+    index=1,
+    key="refresh_mode",
 )
 
-raw = None
-source_note = ""
-
-if source == "即時 API":
-    api_key = secret_key()
-    if not api_key:
-        api_key = st.sidebar.text_input(
-            "環境部 API 金鑰",
-            type="password",
-        )
-
-    refresh_mode = st.sidebar.selectbox(
-        "資料更新",
-        ["手動更新", "整點更新"],
-        index=1,
-        key="refresh_mode",
+if refresh_mode == "整點更新":
+    now = datetime.now()
+    interval_to_hour = (
+        (60 - now.minute) * 60 - now.second
+    ) * 1000 - now.microsecond // 1000 + 15_000
+    st_autorefresh(
+        interval=max(interval_to_hour, 1000),
+        key="aqi_hourly_refresh",
     )
 
-    if refresh_mode == "整點更新" and api_key:
-        now = datetime.now()
-        interval_to_hour = (
-            (60 - now.minute) * 60 - now.second
-        ) * 1000 - now.microsecond // 1000 + 15_000
-        st_autorefresh(
-            interval=max(interval_to_hour, 1000),
-            key="aqi_hourly_refresh",
-        )
+follow_latest = st.sidebar.toggle("自動跟隨最新資料時間", value=True)
 
-    follow_latest = st.sidebar.toggle("自動跟隨最新資料時間", value=True)
+if st.sidebar.button("🔄 重新抓取"):
+    load_live.clear()
 
-    if st.sidebar.button("🔄 重新抓取"):
-        load_live.clear()
-
-    if api_key:
-        try:
-            raw, fetched = load_live(api_key)
-            source_note = f"即時 API（台灣時間 {fetched:%H:%M} 抓取）"
-        except requests.exceptions.Timeout:
-            st.sidebar.warning(
-                "環境部 API 連線逾時，已改用本機 CSV。可稍後按「重新抓取」。"
-            )
-        except Exception as error:
-            st.sidebar.warning(
-                f"環境部 API 暫時無法使用，已改用本機 CSV。原因：{error}"
-            )
-    else:
-        st.sidebar.info("尚未輸入金鑰，先使用本機 CSV。")
-
-
-if raw is None:
-    try:
-        raw = load_csv(CSV_PATH)
-        source_note = f"本機 CSV 快照（{CSV_PATH}）"
-    except FileNotFoundError:
-        st.error(f"找不到 {CSV_PATH}，請把它放在和這支程式同一個資料夾。")
-        st.stop()
+try:
+    raw, fetched = load_live(api_key)
+    source_note = f"即時 API（台灣時間 {fetched:%H:%M} 抓取）"
+except requests.exceptions.Timeout:
+    st.error("環境部 API 連線逾時，無法取得即時資料。請稍後按「重新抓取」。")
+    st.stop()
+except Exception as error:
+    st.error(f"環境部 API 暫時無法取得資料（{type(error).__name__}）。請稍後按「重新抓取」。")
+    st.stop()
 
 
 missing = [column for column in REQUIRED if column not in raw.columns]
 if missing:
-    st.error(f"檔案缺少這些欄位：{missing}")
-    st.write("你的檔案實際欄位：", list(raw.columns))
+    st.error(f"環境部 API 回傳資料缺少必要欄位：{missing}")
     st.stop()
 
 
@@ -896,7 +854,7 @@ metric = st.sidebar.selectbox(
     format_func=LABELS.get,
 )
 
-if source == "即時 API" and follow_latest:
+if follow_latest:
     t_sel = times[-1]
     st.sidebar.caption(f"目前顯示最新資料：{t_sel:%m/%d %H:%M}")
 else:
