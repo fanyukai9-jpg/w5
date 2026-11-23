@@ -262,18 +262,12 @@ def draw_map(
     high: float,
     slot,
     zoom: float = 6.4,
-    color_mode: str = "依 AQI／指標",
-    marker_color: str = "red",
     size_mode: str = "依數值調整",
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
 
-    colors = (
-        [rgb_for(metric, value, low, high) for value in data[metric]]
-        if color_mode == "依 AQI／指標"
-        else [tuple(int(marker_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))] * len(data)
-    )
+    colors = [rgb_for(metric, value, low, high) for value in data[metric]]
 
     data["rgba"] = [[*color, 210] for color in colors]
     data["hex"] = ["#%02x%02x%02x" % color for color in colors]
@@ -525,33 +519,14 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_data, tab_advanced = st.tabs(
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        "課堂延伸：可切換點色、點大小與地圖縮放。滑鼠移到點上可看測站數值。"
+        "測站點色依 AQI／所選指標變化；可調整點大小與地圖縮放。"
+        "滑鼠移到點上可看測站數值。"
     )
 
-    map_col1, map_col2, map_col3 = st.columns(3)
-    with map_col1:
-        map_color_mode = st.selectbox(
-            "測站點色",
-            ["依 AQI／指標", "統一自訂色"],
-        )
-    with map_col2:
-        map_marker_color = st.selectbox(
-            "自訂點色",
-            ["#ff0000", "#0000ff", "#00aa44", "#8b3fa0", "#ff8800"],
-            format_func={
-                "#ff0000": "紅色",
-                "#0000ff": "藍色",
-                "#00aa44": "綠色",
-                "#8b3fa0": "紫色",
-                "#ff8800": "橘色",
-            }.get,
-            disabled=map_color_mode != "統一自訂色",
-        )
-    with map_col3:
-        map_size_mode = st.selectbox(
-            "測站點大小",
-            ["依數值調整", "固定大小"],
-        )
+    map_size_mode = st.selectbox(
+        "測站點大小",
+        ["依數值調整", "固定大小"],
+    )
     map_zoom = st.slider("地圖縮放", 5.0, 10.0, 6.4, 0.2)
 
     play = st.button("▶ 播放這段時間的地圖動畫")
@@ -568,8 +543,6 @@ with tab_map:
             draw_map(
                 frame, metric, low, high, map_slot,
                 zoom=map_zoom,
-                color_mode=map_color_mode,
-                marker_color=map_marker_color,
                 size_mode=map_size_mode,
             )
             time.sleep(0.8)
@@ -577,8 +550,6 @@ with tab_map:
         draw_map(
             snap, metric, low, high, map_slot,
             zoom=map_zoom,
-            color_mode=map_color_mode,
-            marker_color=map_marker_color,
             size_mode=map_size_mode,
         )
 
