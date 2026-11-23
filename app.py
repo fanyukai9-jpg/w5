@@ -3,8 +3,10 @@
 執行：streamlit run app.py
 """
 
+import base64
 import json
 import time
+from html import escape
 from math import asin, cos, log, pi, radians, sin, sqrt, tan
 from pathlib import Path
 from datetime import datetime
@@ -22,12 +24,19 @@ except ImportError:  # 沒有 pydeck 就退回 st.map
 
 
 API_URL = "https://data.moenv.gov.tw/api/v2/aqx_p_488"
+HERO_IMAGE_PATH = Path(__file__).with_name("assets") / "clouds.jpg"
 
 st.set_page_config(
     page_title="臺灣空氣品質監測｜即時與趨勢",
     page_icon="🌫️",
     layout="wide",
 )
+
+
+@st.cache_data
+def hero_image_data_uri() -> str:
+    image_data = base64.b64encode(HERO_IMAGE_PATH.read_bytes()).decode("ascii")
+    return f"data:image/jpeg;base64,{image_data}"
 
 location_component = st.components.v2.component(
     name="air_quality_nearby_locator",
@@ -894,19 +903,122 @@ low, high = raw[metric].min(), raw[metric].max()
 
 
 # ---------- 標題與指標 ----------
-st.title("臺灣空氣品質監測")
 location_scope_note = ""
 if st.session_state.get("nearby_anchor_county"):
     location_scope_note = (
         f"｜定位周邊：{st.session_state['nearby_anchor_county']}及相鄰縣市"
     )
-st.caption(
-    "即時掌握各地空氣品質，追蹤污染變化，並比較區域與測站。\n\n"
-    f"資料來源：{source_note}｜"
-    f"資料範圍：{times[0]:%m/%d %H:%M}–{times[-1]:%m/%d %H:%M}｜"
-    f"目前檢視：{t_sel:%m/%d %H:%M}｜"
-    f"符合條件的測站：{len(snap)} / "
-    f"{base[base['publishtime'] == t_sel].shape[0]}{location_scope_note}"
+st.html(
+    f"""
+    <style>
+      .aqi-hero {{
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        min-height: 260px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: flex-end;
+        padding: clamp(1.5rem, 4vw, 3rem);
+        border: 1px solid rgba(255, 255, 255, .42);
+        border-radius: 24px;
+        background-image:
+          linear-gradient(100deg, rgba(8, 25, 44, .84) 0%, rgba(8, 31, 52, .62) 45%, rgba(8, 31, 52, .12) 100%),
+          linear-gradient(0deg, rgba(7, 25, 42, .42), transparent 70%),
+          url('{hero_image_data_uri()}');
+        background-size: cover;
+        background-position: center 54%;
+        box-shadow: 0 18px 42px rgba(17, 39, 61, .18);
+        color: #fff;
+      }}
+      .aqi-hero::after {{
+        content: "";
+        position: absolute;
+        z-index: -1;
+        width: 310px;
+        height: 310px;
+        right: -75px;
+        top: -155px;
+        border: 1px solid rgba(255, 255, 255, .25);
+        border-radius: 50%;
+        box-shadow: 0 0 0 30px rgba(255, 255, 255, .06), 0 0 0 65px rgba(255, 255, 255, .045);
+      }}
+      .aqi-hero__content {{ width: 100%; }}
+      .aqi-hero__eyebrow {{
+        display: inline-flex;
+        align-items: center;
+        gap: .55rem;
+        margin-bottom: .8rem;
+        padding: .42rem .78rem;
+        border: 1px solid rgba(255, 255, 255, .38);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, .13);
+        color: rgba(255, 255, 255, .96);
+        font-size: .76rem;
+        font-weight: 650;
+        letter-spacing: .12em;
+        backdrop-filter: blur(10px);
+      }}
+      .aqi-hero__dot {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #b9f0da;
+        box-shadow: 0 0 14px rgba(185, 240, 218, .9);
+      }}
+      .aqi-hero h1 {{
+        margin: 0;
+        color: #fff;
+        font-size: clamp(2rem, 4.5vw, 3.45rem);
+        font-weight: 760;
+        line-height: 1.12;
+        letter-spacing: .025em;
+        text-shadow: 0 3px 20px rgba(0, 0, 0, .28);
+      }}
+      .aqi-hero__subtitle {{
+        max-width: 660px;
+        margin: .75rem 0 1.25rem;
+        color: rgba(255, 255, 255, .9);
+        font-size: 1rem;
+        line-height: 1.65;
+      }}
+      .aqi-hero__meta {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: .5rem;
+      }}
+      .aqi-hero__meta span {{
+        display: inline-block;
+        padding: .46rem .7rem;
+        border: 1px solid rgba(255, 255, 255, .24);
+        border-radius: 10px;
+        background: rgba(11, 29, 47, .34);
+        color: rgba(255, 255, 255, .94);
+        font-size: .78rem;
+        line-height: 1.35;
+        backdrop-filter: blur(8px);
+      }}
+      @media (max-width: 640px) {{
+        .aqi-hero {{ min-height: 300px; border-radius: 18px; background-position: 58% center; }}
+        .aqi-hero__meta {{ display: grid; grid-template-columns: 1fr 1fr; }}
+        .aqi-hero__meta span {{ font-size: .72rem; }}
+      }}
+    </style>
+    <section class="aqi-hero">
+      <div class="aqi-hero__content">
+        <div class="aqi-hero__eyebrow"><i class="aqi-hero__dot"></i>TAIWAN AIR QUALITY · LIVE</div>
+        <h1>臺灣空氣品質監測</h1>
+        <p class="aqi-hero__subtitle">即時掌握各地空氣品質，追蹤污染變化，並比較區域與測站。</p>
+        <div class="aqi-hero__meta">
+          <span>{escape(source_note)}</span>
+          <span>資料範圍　{times[0]:%m/%d %H:%M}–{times[-1]:%m/%d %H:%M}</span>
+          <span>目前檢視　{t_sel:%m/%d %H:%M}</span>
+          <span>符合條件測站　{len(snap)} / {base[base['publishtime'] == t_sel].shape[0]}{escape(location_scope_note)}</span>
+        </div>
+      </div>
+    </section>
+    """,
+    width="stretch",
 )
 
 if snap.empty:
@@ -1113,7 +1225,6 @@ with tab_trend:
 
     with column2:
         st.subheader("多縣市污染指標變化")
-        st.caption("多個縣市共用時間軸並重疊顯示，呈現方式依課堂面積圖範例。")
 
         grouping = st.radio(
             "分組方式",
