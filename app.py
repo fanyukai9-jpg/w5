@@ -229,13 +229,10 @@ def load_live(api_key: str):
         raise RuntimeError(f"環境部 API 回傳 HTTP {response.status_code}：{payload}")
 
     if isinstance(payload, list):
-        # aqx_p_488 currently returns the record list at the top level.
         records = payload
     else:
         records = None
     if records is None and isinstance(payload, dict):
-        # MOENV FAQ documents records under result.records; accept the flat
-        # and top-level list forms for API-version compatibility.
         result = payload.get("result")
         if isinstance(result, dict):
             records = result.get("records")
@@ -330,9 +327,9 @@ def draw_map(
 
     colors = [rgb_for(metric, value, low, high) for value in data[metric]]
 
-    alpha = 80 if focused_county else 210
+    alpha = 32 if focused_county else 210
     data["rgba"] = [
-        [*color, 210 if not focused_county or county == focused_county else alpha]
+        [*color, 255 if focused_county and county == focused_county else alpha]
         for color, county in zip(colors, data["county"])
     ]
     data["hex"] = ["#%02x%02x%02x" % color for color in colors]
@@ -348,7 +345,10 @@ def draw_map(
         else pd.Series(0.5, index=data.index)
     )
     data["elevation"] = pd.to_numeric(data[metric], errors="coerce").clip(lower=0).fillna(0)
+    if focused_county:
+        data.loc[data["county"] == focused_county, "elevation"] *= 1.4
     data["radius_m"] = 2500 + ratio * 6500
+    data["focus_ring_radius"] = data["radius_m"] * 1.18
     data["size_m"] = 100 + ratio * 900
 
     if pdk is None:
@@ -427,9 +427,6 @@ def draw_map(
                 "PolygonLayer",
                 data=county_polygon_data(),
                 id="county-boundaries",
-                # This layer only captures county clicks. Draw every visible
-                # border from the source GeoJSON below to keep its geometry
-                # identical in flat and pitched map views.
                 stroked=False,
                 filled=True,
                 get_polygon="polygon",
@@ -503,8 +500,30 @@ def draw_map(
                 )
             )
 
+    station_layers = [*boundary_layers, layer]
+    if focused_county and map_mode == "測站平面圖":
+        focused_stations = data.loc[data["county"] == focused_county]
+        if not focused_stations.empty:
+            station_layers.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=focused_stations[
+                        ["latitude", "longitude", "focus_ring_radius"]
+                    ],
+                    id="focused-station-rings",
+                    get_position="[longitude, latitude]",
+                    get_radius="focus_ring_radius",
+                    get_fill_color=[0, 0, 0, 0],
+                    get_line_color=[255, 255, 255, 255],
+                    stroked=True,
+                    filled=False,
+                    line_width_min_pixels=2,
+                    pickable=False,
+                )
+            )
+
     deck = pdk.Deck(
-        layers=[*boundary_layers, layer],
+        layers=station_layers,
         views=[pdk.View(type="MapView", controller=True)],
         initial_view_state=pdk.ViewState(
             latitude=center[0],
@@ -555,8 +574,6 @@ def draw_map(
         if focused_county and boundary_county and boundary_county != focused_county:
             next_focus = boundary_county
         elif focused_county and selected_by_layer.get("focused-county-toggle"):
-            # The focused polygon uses its own selectable layer, so clicking it
-            # again is a distinct event that restores the previous map view.
             next_focus = None
         elif "county-boundaries" in selected_by_layer:
             next_focus = boundary_county
@@ -581,10 +598,6 @@ def load_county_boundaries():
     with path.open(encoding="utf-8") as boundary_file:
         features = json.load(boundary_file).get("features", [])
 
-    # Some county features include remote offshore polygons (for example,
-    # the South China Sea). Rendering those with the Taiwan map makes a county
-    # outline span the whole map and makes focus bounds unusable. Keep Taiwan,
-    # Penghu, Kinmen, and Matsu while omitting polygons outside this region.
     west, east, south, north = 117.0, 123.5, 20.0, 27.5
 
     def polygon_is_near_taiwan(polygon):
@@ -729,18 +742,20 @@ if source == "即時 API":
         value=secret_key(),
     )
 
-    auto_refresh = st.sidebar.toggle("自動更新", value=True)
-    refresh_seconds = st.sidebar.selectbox(
-        "更新頻率",
-        [30, 60, 120, 300],
-        index=1,
-        format_func=lambda seconds: f"每 {seconds} 秒",
+    refresh_mode = st.sidebar.selectbox(
+        "資料更新",
+        ["手動更新", "整點更新"],
+        index=0,
     )
 
-    if auto_refresh and api_key:
+    if refresh_mode == "整點更新" and api_key:
+        now = datetime.now()
+        interval_to_hour = (
+            (60 - now.minute) * 60 - now.second
+        ) * 1000 - now.microsecond // 1000
         st_autorefresh(
-            interval=refresh_seconds * 1000,
-            key="aqi_live_refresh",
+            interval=max(interval_to_hour, 1000),
+            key="aqi_hourly_refresh",
         )
 
     follow_latest = st.sidebar.toggle("自動跟隨最新資料時間", value=True)
@@ -863,7 +878,7 @@ metric = st.sidebar.selectbox(
     format_func=LABELS.get,
 )
 
-if source == "即時 API" and auto_refresh and follow_latest:
+if source == "即時 API" and follow_latest:
     t_sel = times[-1]
     st.sidebar.caption(f"目前顯示最新資料：{t_sel:%m/%d %H:%M}")
 else:
@@ -957,7 +972,8 @@ with tab_map:
         f"全台測站都會顯示；定位附近縣市以粗線標出。"
         f"顏色代表{LABELS[metric]}級距，平面圖點大小或 3D 柱高代表數值高低。"
         "定位後地圖會放大到附近區域；點任一縣市可聚焦，再點同一縣市恢復。"
-        "聚焦時其他縣市調暗，可拖曳平移、滾輪縮放、按住右鍵旋轉。"
+        "聚焦時其他縣市與測站調暗，聚焦測站會加亮並加粗標示。"
+        "可拖曳平移、滾輪縮放、按住右鍵旋轉。"
         "縣市界線來源：內政部國土測繪中心。"
     )
 
