@@ -731,15 +731,11 @@ if source == "即時 API":
         key="refresh_mode",
     )
 
-    if (
-        refresh_mode == "整點更新"
-        and api_key
-        and not st.session_state.get("map_animation_running", False)
-    ):
+    if refresh_mode == "整點更新" and api_key:
         now = datetime.now()
         interval_to_hour = (
             (60 - now.minute) * 60 - now.second
-        ) * 1000 - now.microsecond // 1000
+        ) * 1000 - now.microsecond // 1000 + 15_000
         st_autorefresh(
             interval=max(interval_to_hour, 1000),
             key="aqi_hourly_refresh",
@@ -1035,50 +1031,32 @@ with tab_map:
     if focused_county:
         st.info(f"目前聚焦：{focused_county}｜再點一次該縣市可恢復附近區域視野。")
 
-    def start_map_animation():
-        st.session_state["map_animation_running"] = True
-
-    play = st.button(
-        "▶ 播放這段時間的地圖動畫",
-        on_click=start_map_animation,
-    )
+    play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
+    caption_slot.caption(" ")
     map_slot = st.empty()
 
     if play:
-        try:
-            for timestamp in times:
-                frame = raw[
-                    (raw["publishtime"] == timestamp)
-                    & raw["aqi"].ge(aqi_min)
-                    & raw["status"].isin(status_pick)
-                ]
-                caption_slot.markdown(
-                    f"**{timestamp:%m/%d %H:%M}**　"
-                    f"{LABELS[metric]}　測站 {len(frame)}"
-                )
-                draw_map(
-                    frame, metric, low, high, map_slot,
-                    zoom=map_zoom,
-                    center=map_center,
-                    map_mode=map_mode,
-                    highlighted_counties=highlighted_counties,
-                    focused_county=focused_county,
-                    selectable=False,
-                )
-                time.sleep(0.8)
-        finally:
-            st.session_state["map_animation_running"] = False
-
-        if refresh_mode == "整點更新" and api_key:
-            now = datetime.now()
-            interval_to_hour = (
-                (60 - now.minute) * 60 - now.second
-            ) * 1000 - now.microsecond // 1000
-            st_autorefresh(
-                interval=max(interval_to_hour, 1000),
-                key="aqi_hourly_refresh",
+        for timestamp in times:
+            frame = raw[
+                (raw["publishtime"] == timestamp)
+                & raw["aqi"].ge(aqi_min)
+                & raw["status"].isin(status_pick)
+            ]
+            caption_slot.markdown(
+                f"**{timestamp:%m/%d %H:%M}**　"
+                f"{LABELS[metric]}　測站 {len(frame)}"
             )
+            draw_map(
+                frame, metric, low, high, map_slot,
+                zoom=map_zoom,
+                center=map_center,
+                map_mode=map_mode,
+                highlighted_counties=highlighted_counties,
+                focused_county=focused_county,
+                selectable=False,
+            )
+            time.sleep(0.8)
     else:
         draw_map(
             map_data, metric, low, high, map_slot,
