@@ -6,6 +6,7 @@ API 失敗時會自動退回 CSV。
 
 import time
 from datetime import datetime
+from html import escape
 
 import pandas as pd
 import requests
@@ -87,6 +88,19 @@ AQI_STEPS = [
 
 GRAY = (153, 153, 153)
 MAROON = (126, 0, 35)
+
+CHART_PALETTES = {
+    "課堂紅藍綠": ["red", "blue", "green", "orange", "purple", "teal"],
+    "暖色": ["#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60"],
+    "冷色": ["#313695", "#4575b4", "#74add1", "#abd9e9", "#2a9d8f"],
+    "高對比": ["#e63946", "#4361ee", "#2a9d8f", "#f4a261", "#8338ec"],
+}
+
+
+def palette_for(name: str, count: int) -> list[str]:
+    """依選取配色產生和資料系列數量相同的顏色清單。"""
+    palette = CHART_PALETTES[name]
+    return [palette[index % len(palette)] for index in range(count)]
 
 
 # ---------- 資料 ----------
@@ -246,14 +260,19 @@ def draw_map(
     low: float,
     high: float,
     slot,
+    zoom: float = 6.4,
+    color_mode: str = "依 AQI／指標",
+    marker_color: str = "red",
+    size_mode: str = "依數值調整",
 ):
     """繪製測站地圖。"""
     data = data.dropna(subset=["latitude", "longitude"]).copy()
 
-    colors = [
-        rgb_for(metric, value, low, high)
-        for value in data[metric]
-    ]
+    colors = (
+        [rgb_for(metric, value, low, high) for value in data[metric]]
+        if color_mode == "依 AQI／指標"
+        else [tuple(int(marker_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))] * len(data)
+    )
 
     data["rgba"] = [[*color, 210] for color in colors]
     data["hex"] = ["#%02x%02x%02x" % color for color in colors]
@@ -263,6 +282,13 @@ def draw_map(
         .astype(object)
         .where(data[metric].notna(), "無資料")
     )
+    ratio = (
+        (data[metric] - low).div(high - low).clip(0, 1).fillna(0.5)
+        if high != low
+        else pd.Series(0.5, index=data.index)
+    )
+    data["radius_m"] = 2500 + ratio * 6500 if size_mode == "依數值調整" else 5000
+    data["size_m"] = 100 + ratio * 900 if size_mode == "依數值調整" else 500
 
     if pdk is None:
         slot.map(
@@ -270,7 +296,8 @@ def draw_map(
             latitude="latitude",
             longitude="longitude",
             color="hex",
-            size=2500,
+            size="size_m",
+            zoom=round(zoom),
         )
         return
 
@@ -279,12 +306,12 @@ def draw_map(
         data=data[
             [
                 "sitename", "county", "status",
-                "latitude", "longitude", "rgba", "val",
+                "latitude", "longitude", "rgba", "val", "radius_m",
             ]
         ],
         get_position="[longitude, latitude]",
         get_fill_color="rgba",
-        get_radius=2500,
+        get_radius="radius_m",
         radius_min_pixels=5,
         radius_max_pixels=16,
         pickable=True,
@@ -295,7 +322,7 @@ def draw_map(
         initial_view_state=pdk.ViewState(
             latitude=23.7,
             longitude=121.0,
-            zoom=6.4,
+            zoom=zoom,
         ),
         tooltip={
             "html": (
@@ -491,9 +518,34 @@ tab_map, tab_trend, tab_cmp, tab_station, tab_data = st.tabs(
 # ---------- 地圖 ----------
 with tab_map:
     st.caption(
-        "顏色：AQI 用官方等級色（綠、黃、橘、紅、紫）；"
-        "其他指標用綠→紅漸層。滑鼠移到點上可看數值。"
+        "課堂延伸：可切換點色、點大小與地圖縮放。滑鼠移到點上可看測站數值。"
     )
+
+    map_col1, map_col2, map_col3 = st.columns(3)
+    with map_col1:
+        map_color_mode = st.selectbox(
+            "測站點色",
+            ["依 AQI／指標", "統一自訂色"],
+        )
+    with map_col2:
+        map_marker_color = st.selectbox(
+            "自訂點色",
+            ["#ff0000", "#0000ff", "#00aa44", "#8b3fa0", "#ff8800"],
+            format_func={
+                "#ff0000": "紅色",
+                "#0000ff": "藍色",
+                "#00aa44": "綠色",
+                "#8b3fa0": "紫色",
+                "#ff8800": "橘色",
+            }.get,
+            disabled=map_color_mode != "統一自訂色",
+        )
+    with map_col3:
+        map_size_mode = st.selectbox(
+            "測站點大小",
+            ["依數值調整", "固定大小"],
+        )
+    map_zoom = st.slider("地圖縮放", 5.0, 10.0, 6.4, 0.2)
 
     play = st.button("▶ 播放這段時間的地圖動畫")
     caption_slot = st.empty()
@@ -506,10 +558,22 @@ with tab_map:
                 f"**{timestamp:%m/%d %H:%M}**　"
                 f"{LABELS[metric]}　測站 {len(frame)}"
             )
-            draw_map(frame, metric, low, high, map_slot)
+            draw_map(
+                frame, metric, low, high, map_slot,
+                zoom=map_zoom,
+                color_mode=map_color_mode,
+                marker_color=map_marker_color,
+                size_mode=map_size_mode,
+            )
             time.sleep(0.8)
     else:
-        draw_map(snap, metric, low, high, map_slot)
+        draw_map(
+            snap, metric, low, high, map_slot,
+            zoom=map_zoom,
+            color_mode=map_color_mode,
+            marker_color=map_marker_color,
+            size_mode=map_size_mode,
+        )
 
 
 # ---------- 趨勢 ----------
@@ -532,6 +596,11 @@ with tab_trend:
             format_func=LABELS.get,
             key="trend_metric",
         )
+        line_palette = st.selectbox(
+            "線條配色",
+            list(CHART_PALETTES),
+            key="line_palette",
+        )
 
         if picks:
             line = filtered[
@@ -542,7 +611,10 @@ with tab_trend:
                 values=metric1,
                 aggfunc="mean",
             )
-            st.line_chart(line)
+            st.line_chart(
+                line,
+                color=palette_for(line_palette, len(line.columns)),
+            )
         else:
             st.info("請至少選一個測站。")
 
@@ -563,6 +635,21 @@ with tab_trend:
             format_func=LABELS.get,
             key="area_metric",
         )
+        area_palette = st.selectbox(
+            "面積圖配色",
+            list(CHART_PALETTES),
+            key="area_palette",
+        )
+        area_stack_options = {
+            "分層重疊（layered）": False,
+            "中心堆疊（center）": "center",
+            "標準化 100%（normalize）": "normalize",
+        }
+        area_stack_label = st.selectbox(
+            "堆疊樣式",
+            list(area_stack_options),
+            key="area_stack",
+        )
 
         area_data = filtered.pivot_table(
             index="publishtime",
@@ -571,7 +658,11 @@ with tab_trend:
             aggfunc="mean",
         ).fillna(0)
 
-        st.area_chart(area_data)
+        st.area_chart(
+            area_data,
+            color=palette_for(area_palette, len(area_data.columns)),
+            stack=area_stack_options[area_stack_label],
+        )
 
 
 # ---------- 比較 ----------
@@ -579,7 +670,7 @@ with tab_cmp:
     column1, column2 = st.columns(2)
 
     with column1:
-        st.subheader(f"{LABELS[metric]} 排名（長條圖）")
+        st.subheader("縣市／區域／測站比較（長條圖）")
 
         level = st.radio(
             "比較單位",
@@ -593,24 +684,74 @@ with tab_cmp:
             "測站": "station",
         }[level]
 
-        order = st.radio(
-            "排序",
-            ["高 → 低", "低 → 高"],
+        bar_content = st.selectbox(
+            "圖表內容",
+            ["平均 AQI 排名", "空氣品質狀態測站數"],
+        )
+        bar_orientation = st.radio(
+            "長條方向",
+            ["直向", "橫向"],
             horizontal=True,
         )
-
-        rank = snap.groupby(group_column)[metric].mean().sort_values(
-            ascending=(order == "低 → 高")
+        bar_stack_options = {
+            "並排": False,
+            "累加堆疊": True,
+            "標準化 100%": "normalize",
+            "中心堆疊": "center",
+            "重疊": "layered",
+        }
+        bar_stack_label = st.selectbox(
+            "系列呈現方式",
+            list(bar_stack_options),
+            disabled=bar_content != "空氣品質狀態測站數",
+        )
+        bar_palette = st.selectbox(
+            "長條圖配色",
+            list(CHART_PALETTES),
         )
 
-        count = st.slider(
-            "顯示前幾名",
-            1,
-            max(1, len(rank)),
-            min(10, len(rank)),
-        )
-
-        st.bar_chart(rank.head(count))
+        if bar_content == "平均 AQI 排名":
+            order = st.radio(
+                "排序",
+                ["高 → 低", "低 → 高"],
+                horizontal=True,
+            )
+            rank = snap.groupby(group_column)[metric].mean().sort_values(
+                ascending=(order == "低 → 高")
+            )
+            count = st.slider(
+                "顯示前幾名",
+                1,
+                max(1, len(rank)),
+                min(10, len(rank)),
+                key="aqi_rank_count",
+            )
+            st.bar_chart(
+                rank.head(count),
+                horizontal=(bar_orientation == "橫向"),
+                color=palette_for(bar_palette, 1)[0],
+            )
+        else:
+            status_matrix = snap.groupby(
+                [group_column, "status"]
+            ).size().unstack(fill_value=0).reindex(columns=status_opts, fill_value=0)
+            status_matrix = status_matrix.loc[
+                status_matrix.sum(axis=1).sort_values(ascending=False).index
+            ]
+            count = st.slider(
+                "顯示前幾名",
+                1,
+                max(1, len(status_matrix)),
+                min(10, len(status_matrix)),
+                key="status_bar_count",
+            )
+            status_matrix = status_matrix.head(count)
+            st.bar_chart(
+                status_matrix,
+                horizontal=(bar_orientation == "橫向"),
+                stack=bar_stack_options[bar_stack_label],
+                color=palette_for(bar_palette, len(status_matrix.columns)),
+            )
 
     with column2:
         st.subheader("兩個變數的關係（散佈圖）")
@@ -641,8 +782,44 @@ with tab_cmp:
                 "status": "狀態",
             }.get,
         )
+        scatter_palette = st.selectbox(
+            "散佈圖配色",
+            list(CHART_PALETTES),
+        )
+        scatter_size_mode = st.radio(
+            "點大小",
+            ["固定大小", "依指標調整"],
+            horizontal=True,
+        )
 
-        points = snap.dropna(subset=[x_metric, y_metric])
+        points = snap.dropna(subset=[x_metric, y_metric]).copy()
+        points["_scatter_group"] = points[color_by].fillna("未分類").astype(str)
+        scatter_groups = sorted(points["_scatter_group"].unique())
+        scatter_colors = palette_for(scatter_palette, len(scatter_groups))
+        scatter_color_map = dict(zip(scatter_groups, scatter_colors))
+        points["_scatter_color"] = points["_scatter_group"].map(scatter_color_map)
+
+        scatter_size = 100
+        if scatter_size_mode == "依指標調整":
+            size_options = [m for m in options if m not in {x_metric, y_metric}] or options
+            size_metric = st.selectbox(
+                "點大小依據",
+                size_options,
+                format_func=LABELS.get,
+            )
+            points["_scatter_size"] = pd.to_numeric(
+                points[size_metric],
+                errors="coerce",
+            ).fillna(0).clip(lower=0)
+            scatter_size = "_scatter_size"
+        else:
+            scatter_size = st.slider(
+                "固定點大小",
+                20,
+                500,
+                100,
+                10,
+            )
 
         if len(points) > 2 and x_metric != y_metric:
             correlation = points[[x_metric, y_metric]].corr().iloc[0, 1]
@@ -650,11 +827,27 @@ with tab_cmp:
                 f"相關係數 r = {correlation:.2f}（{len(points)} 個測站）"
             )
 
+        if 1 < len(scatter_groups) <= 8:
+            legend_columns = st.columns(min(4, len(scatter_groups)))
+            for index, group in enumerate(scatter_groups):
+                with legend_columns[index % len(legend_columns)]:
+                    st.markdown(
+                        f'<span style="color:{scatter_color_map[group]}">●</span> '
+                        f'{escape(group)}',
+                        unsafe_allow_html=True,
+                    )
+        elif scatter_groups:
+            st.caption(
+                f"點色依「{ {'county': '縣市', 'region': '區域', 'status': '狀態'}[color_by] }」"
+                f"分類，共 {len(scatter_groups)} 類。"
+            )
+
         st.scatter_chart(
             points,
             x=x_metric,
             y=y_metric,
-            color=color_by,
+            color="_scatter_color",
+            size=scatter_size,
         )
 
     column3, column4 = st.columns(2)
@@ -721,10 +914,17 @@ with tab_station:
     )
 
     if show_metrics:
+        station_line_palette = st.selectbox(
+            "測站指標線條配色",
+            list(CHART_PALETTES),
+        )
         chart_data = one.set_index("publishtime")[show_metrics].rename(
             columns=LABELS
         )
-        st.line_chart(chart_data)
+        st.line_chart(
+            chart_data,
+            color=palette_for(station_line_palette, len(chart_data.columns)),
+        )
 
 
 # ---------- 資料 ----------
